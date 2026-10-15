@@ -50,7 +50,7 @@ try {
     <div class="col-head up">
       <span class="t">高于平均值品种</span>
       <span class="n" id="hAbove">0 个</span>
-      <span class="desc">偏离度 ≥ 门槛 → 可为「下阈」填充动态均线</span>
+      <span class="desc">偏离度 ≥ 门槛 → 可填「下阈 / 上阈」，默认下阈</span>
     </div>
     <div class="list" id="listAbove"></div>
   </div>
@@ -58,7 +58,7 @@ try {
     <div class="col-head down">
       <span class="t">低于平均值品种</span>
       <span class="n" id="hBelow">0 个</span>
-      <span class="desc">偏离度 ≥ 门槛 → 可为「上阈」填充动态均线</span>
+      <span class="desc">偏离度 ≥ 门槛 → 可填「上阈 / 下阈」，默认上阈</span>
     </div>
     <div class="list" id="listBelow"></div>
   </div>
@@ -156,6 +156,29 @@ try {
         预警判定采用 <b>1 分钟K线穿越</b>：上一根收盘在阈值一侧、当前根穿越到另一侧才算一次事件。
         同一根 1 分钟K线内只报一次，价格长期停在阈值外<b>不会</b>重复发信。<br>
         <b>阈值只有「已锁定」时才参与预警；解锁状态下一律不预警。</b>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h4>历史基准数据（历史最高 / 最低 / 均值）</h4>
+      <div class="note">
+        面板的偏离度百分比 = <code>(现价 − 均值) ÷ (历史最高或最低 − 均值)</code>。
+        这里可以一键<b>导出</b>当前全部品种生效的 H / L / M，改完后<b>导入</b>即生效
+        （导入值优先于 Excel 内置值）。
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label></label>
+        <button class="btn primary" id="btnBaseExport">⬇ 导出 JSON</button>
+        <button class="btn" id="btnBaseImport">⬆ 导入 JSON</button>
+        <button class="btn ghost" id="btnBaseReset">恢复内置</button>
+        <input type="file" id="fileBase" accept=".json,application/json" hidden>
+      </div>
+      <div class="note" id="baseState">--</div>
+      <div class="note">
+        导入文件格式（导出文件可直接改后原样传回）：
+        <code>{"items":[{"code":"CU","H":120000,"L":40000,"M":72000}]}</code><br>
+        也兼容 <code>{"CU":{"H":…,"L":…,"M":…}}</code>；字段名可用 H/L/M 或 high/low/mean。
+        优先级：<b>导入值 &gt; 自动计算（加权全历史日K）&gt; Excel 汇总值</b>。
       </div>
     </div>
 

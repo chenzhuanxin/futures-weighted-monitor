@@ -73,6 +73,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(CACHE_DIR, "配置.json")
 THRESH_FILE = os.path.join(CACHE_DIR, "阈值设置.json")
 ALERT_FILE = os.path.join(CACHE_DIR, "预警记录.json")
+BASE_FILE = os.path.join(CACHE_DIR, "基准_HLM.json")
 STATIC_DIR = os.path.join(BASE_DIR, "静态")
 
 KIND_ORDER = TQ.KIND_ORDER
@@ -269,6 +270,10 @@ class App:
         self._base_lock = threading.RLock()
         self._base_done = False
         self._base_err = ""
+        # 用户导入的基准（优先级最高，覆盖内置 Excel 值与自动计算值）
+        self.base_override: dict = {}
+        self.base_meta: dict = {}
+        self.load_base_override()
 
     # ---------------- 持久化 ---------------- #
     @staticmethod
@@ -302,13 +307,151 @@ class App:
         return self.config.get("panel", {}).get(k, d)
 
     # ---------------- 历史基准（H/L/M） ---------------- #
+    def load_base_override(self):
+        """读取 缓存/基准_HLM.json（用户导入的历史 H/L/M），并覆盖到 self.base。"""
+        obj = {}
+        try:
+            with open(BASE_FILE, "r", encoding="utf-8") as fh:
+                obj = json.load(fh) or {}
+        except Exception:                                       # noqa: BLE001
+            obj = {}
+        items = obj.get("items") if isinstance(obj, dict) else None
+        norm = self._norm_base_items(items if items is not None else obj)
+        with self._base_lock:
+            self.base_override = norm
+            self.base_meta = {"updatedAt": obj.get("updatedAt", ""),
+                              "note": obj.get("note", ""),
+                              "count": len(norm)}
+            for c, v in norm.items():
+                if c not in self.base:
+                    v0 = PT.BY_CODE.get(c) or {}
+                    self.base[c] = {"H": v["H"], "L": v["L"], "M": v["M"],
+                                    "auto": False, "src": "import",
+                                    "name": v0.get("name", c),
+                                    "exch": v0.get("exch", "")}
+                else:
+                    self.base[c].update({"H": v["H"], "L": v["L"], "M": v["M"]})
+                    self.base[c]["src"] = "import"
+        if norm:
+            print(" [基准] 已从 缓存/基准_HLM.json 载入 %d 个品种（覆盖内置值）"
+                  % len(norm))
+
+    @staticmethod
+    def _norm_base_items(items) -> dict:
+        """把各种写法的导入内容统一成 {code: {H, L, M}}，非法条目直接丢弃。"""
+        out: dict = {}
+        if isinstance(items, dict):
+            it = items.items()
+        elif isinstance(items, list):
+            it = [(x.get("code"), x) for x in items if isinstance(x, dict)]
+        else:
+            return out
+        for code, v in it:
+            if not code or not isinstance(v, dict):
+                continue
+            code = str(code).strip().upper()
+            try:
+                H = float(v.get("H", v.get("h", v.get("high"))))
+                L = float(v.get("L", v.get("l", v.get("low"))))
+                M = float(v.get("M", v.get("m", v.get("mean", v.get("avg")))))
+            except Exception:                                   # noqa: BLE001
+                continue
+            if not (H > 0 and L > 0 and M > 0) or H < L:
+                continue
+            out[code] = {"H": round(H, 6), "L": round(L, 6), "M": round(M, 6)}
+        return out
+
+    def base_export(self) -> dict:
+        """导出当前**生效**的 H/L/M（含 Excel 内置值、自动计算值、已导入值）。"""
+        items = []
+        with self._base_lock:
+            for v in PT.VARIETIES:
+                c = v["code"]
+                b = self.base.get(c) or {}
+                H, L, M = b.get("H"), b.get("L"), b.get("M")
+                if not (H and L and M):
+                    continue
+                src = "import" if c in self.base_override else (
+                    "auto" if (b.get("auto") or v.get("auto")) else "excel")
+                items.append({
+                    "code": c, "name": v["name"], "exch": v["exch"],
+                    "H": H, "L": L, "M": M,
+                    "src": src,
+                    "live": c not in PT.DEAD_CODES,
+                })
+        return {
+            "type": "weighted-monitor-baseline",
+            "version": 1,
+            "exportedAt": now_str(),
+            "source": "加权（仓权）合约监控面板",
+            "usage": "修改各品种 H/L/M 后，用面板「设置 → 历史基准数据 → 导入」原样上传即可生效",
+            "count": len(items),
+            "items": items,
+        }
+
+    def base_import(self, body) -> dict:
+        """导入 H/L/M。接受导出文件原样、或 {"items": [...]}、或 {code: {H,L,M}}。"""
+        if isinstance(body, dict):
+            items = body.get("items", body)
+        else:
+            items = body
+        norm = self._norm_base_items(items)
+        if not norm:
+            return {"ok": False, "message": "未解析到任何有效的 H/L/M 数据"}
+        unknown = [c for c in norm if c not in PT.BY_CODE]
+        norm = {c: v for c, v in norm.items() if c in PT.BY_CODE}
+        if not norm:
+            return {"ok": False,
+                    "message": "品种代码全部无法识别（示例：CU / RB / MA / IF）",
+                    "unknown": unknown[:20]}
+        meta = {"updatedAt": now_str(),
+                "note": (body.get("note") if isinstance(body, dict) else "") or "手动导入",
+                "count": len(norm)}
+        self._save(BASE_FILE, {"updatedAt": meta["updatedAt"], "note": meta["note"],
+                               "items": norm})
+        with self._base_lock:
+            self.base_override = norm
+            self.base_meta = meta
+            for c, v in norm.items():
+                if c not in self.base:
+                    v0 = PT.BY_CODE.get(c) or {}
+                    self.base[c] = {"H": v["H"], "L": v["L"], "M": v["M"],
+                                    "auto": False, "src": "import",
+                                    "name": v0.get("name", c),
+                                    "exch": v0.get("exch", "")}
+                else:
+                    self.base[c].update({"H": v["H"], "L": v["L"], "M": v["M"]})
+                    self.base[c]["src"] = "import"
+        self.note("已导入 %d 个品种的历史 H/L/M 基准" % len(norm))
+        self.refresh()
+        return {"ok": True, "count": len(norm), "unknown": unknown[:20],
+                "message": "已导入并生效 %d 个品种" % len(norm)}
+
+    def base_reset(self) -> dict:
+        """丢弃导入值，恢复为「Excel 内置 + 自动计算」。"""
+        try:
+            if os.path.exists(BASE_FILE):
+                os.remove(BASE_FILE)
+        except Exception:                                       # noqa: BLE001
+            pass
+        with self._base_lock:
+            self.base_override = {}
+            self.base_meta = {}
+            self.base = {c: dict(PT.BASE[c]) for c in PT.BASE}
+            self._base_done = False
+        self.build_baselines()
+        self.note("已恢复内置历史基准（Excel 汇总值 + 自动计算值）")
+        self.refresh()
+        return {"ok": True, "message": "已恢复内置基准"}
+
     def build_baselines(self):
         """为「Excel 基准不可靠」的品种，按加权合约**全历史日K**自动计算 H/L/M。
 
         判据：品种表里 ``auto=True`` 的条目 —— 即本地日K导出被截断（交易日过少）
         或本次汇总未覆盖（铂 / 钯 / 胶版纸）的品种。
         """
-        codes = [c for c in PT.AUTO_CODES if c not in PT.DEAD_CODES]
+        codes = [c for c in PT.AUTO_CODES
+                 if c not in PT.DEAD_CODES and c not in self.base_override]
         if not codes:
             self._base_done = True
             return
@@ -510,8 +653,9 @@ class App:
                 "quoteTime": (qq.get("ts") or "")[:19].replace("T", " "),
                 "delayMs": delay,
                 "H": H, "L": L, "M": M, "percent": _r(pct, 2), "above": above,
-                "baseSrc": "auto" if (base.get("auto") or PT.BY_CODE[code]["auto"])
-                           else "excel",
+                "baseSrc": "import" if code in self.base_override else (
+                    "auto" if (base.get("auto") or PT.BY_CODE[code]["auto"])
+                    else "excel"),
                 "baseBars": base.get("bars") or PT.BY_CODE[code]["days"],
                 "mktOpen": bool(mkt_ok), "mktNote": mkt_why,
                 "up": None, "down": None,
@@ -810,6 +954,7 @@ class App:
             "guard": self.guard(),
             "conn": st,
             "config": self.config,
+            "baseMeta": dict(self.base_meta, overrideCount=len(self.base_override)),
             "error": self.error,
             "serverTime": now_str(),
         }
@@ -981,6 +1126,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "config": APP.config})
             if path == "/api/thresholds":
                 return self._json({"ok": True, "thresholds": APP.thresholds})
+            if path == "/api/base/export":
+                obj = APP.base_export()
+                name = "基准HLM_%s.json" % time.strftime("%Y%m%d_%H%M")
+                body = json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8")
+                return self._send(200, body, "application/json; charset=utf-8", {
+                    "Content-Disposition":
+                        "attachment; filename=\"baseline_%s.json\"; filename*=UTF-8''%s"
+                        % (time.strftime("%Y%m%d_%H%M"),
+                           urllib.parse.quote(name)),
+                })
+            if path == "/api/base":
+                return self._json({"ok": True, "meta": APP.base_meta,
+                                   "count": len(APP.base_override)})
             if path == "/api/kline":
                 code = (qs.get("code") or qs.get("key") or [""])[0]
                 kind = (qs.get("kind") or ["d"])[0]
@@ -995,7 +1153,9 @@ class Handler(BaseHTTPRequestHandler):
                 d.update({
                     "name": v["name"], "exch": v["exch"], "tq": v["tq"],
                     "digits": q.get("digits", 2),
-                    "base": {"H": v["H"], "L": v["L"], "M": v["M"]},
+                    "base": ((lambda b: b if b.get("H") else
+                              {"H": v["H"], "L": v["L"], "M": v["M"]})(
+                                  APP.base_of(code))),
                     "quote": {"last": q.get("last"), "pct": q.get("pct"),
                               "change": q.get("change"), "high": q.get("high"),
                               "low": q.get("low"), "open": q.get("open"),
@@ -1064,6 +1224,13 @@ class Handler(BaseHTTPRequestHandler):
                     APP.refresh()
                 return self._json({"ok": True, "config": APP.config,
                                    "reconnected": reconnected})
+
+            if path == "/api/base/import":
+                res = APP.base_import(body)
+                return self._json(res, 200 if res.get("ok") else 400)
+
+            if path == "/api/base/reset":
+                return self._json(APP.base_reset())
 
             if path == "/api/threshold":
                 code = body.get("code")
