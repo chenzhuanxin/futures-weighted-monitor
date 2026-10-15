@@ -335,8 +335,11 @@ class TianqinSource:
             try:
                 import tqsdk                                          # noqa: F401
             except Exception as exc:                                # noqa: BLE001
-                self.err = ("tqsdk 不可用：%s: %s（请执行 pip install tqsdk）"
-                            % (type(exc).__name__, exc))
+                import sys as _sys
+                self.err = (
+                    "当前 Python 未安装天勤 tqsdk（%s: %s）。"
+                    "当前解释器：%s —— 请执行：\"%s\" -m pip install tqsdk"
+                    % (type(exc).__name__, exc, _sys.executable, _sys.executable))
                 return False
             if self.actor and self.actor.alive:
                 return True
