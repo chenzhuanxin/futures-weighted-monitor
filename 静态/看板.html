@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>加权（仓权）合约监控面板</title>
+<link rel="stylesheet" href="/静态/看板.css">
+<script>
+/* 首屏前应用主题，避免闪白 */
+try {
+  var t = localStorage.getItem('wq_theme');
+  if (t) document.documentElement.setAttribute('data-theme', t);
+} catch (e) {}
+</script>
+</head>
+<body>
+
+<!-- ================= 顶栏 ================= -->
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="logo">
+      <span class="mark">⚖</span>
+      <span>加权合约监控面板</span>
+      <span class="sub">仓权 · TqSdk</span>
+    </div>
+    <span class="spacer"></span>
+    <span class="chip" id="chipConn"><span class="dot pulse"></span><span>连接中…</span></span>
+    <span class="chip" id="chipDelay">延时 <b>--</b></span>
+    <span class="chip" id="chipUpd">更新 <b>--</b></span>
+    <span class="chip" id="chipGuard">邮件守护 <b>--</b></span>
+    <button class="btn sm" id="btnTheme" title="切换显示模式">🌙 深色</button>
+    <button class="btn sm" id="btnGhost" title="隐身（Ctrl+Z）">👁 隐身</button>
+    <button class="btn sm primary" id="btnSet">⚙️ 设置</button>
+  </div>
+</div>
+
+<!-- ================= 概览 ================= -->
+<div class="stats">
+  <div class="stat brand"><div class="k">分析品种</div><div class="v" id="sTotal">--<small>个</small></div></div>
+  <div class="stat up"><div class="k">高于平均值品种</div><div class="v" id="sAbove">--<small>个</small></div></div>
+  <div class="stat down"><div class="k">低于平均值品种</div><div class="v" id="sBelow">--<small>个</small></div></div>
+  <div class="stat warn"><div class="k">已锁定阈值</div><div class="v" id="sArmed">--<small>个</small></div></div>
+  <div class="stat warn"><div class="k">触发中 / 门槛</div><div class="v" id="sTrig">--<small id="sMin">70%</small></div></div>
+  <div class="stat brand"><div class="k">数据延时</div><div class="v" id="sDelay" style="font-size:20px">--</div></div>
+</div>
+
+<!-- ================= 双栏 ================= -->
+<div class="cols">
+  <div>
+    <div class="col-head up">
+      <span class="t">高于平均值品种</span>
+      <span class="n" id="hAbove">0 个</span>
+      <span class="desc">偏离度 ≥ 门槛 → 可为「下阈」填充动态均线</span>
+    </div>
+    <div class="list" id="listAbove"></div>
+  </div>
+  <div>
+    <div class="col-head down">
+      <span class="t">低于平均值品种</span>
+      <span class="n" id="hBelow">0 个</span>
+      <span class="desc">偏离度 ≥ 门槛 → 可为「上阈」填充动态均线</span>
+    </div>
+    <div class="list" id="listBelow"></div>
+  </div>
+</div>
+
+<div class="footer">
+  <span>数据源：<b id="fSrc">天勤 TqSdk 加权（仓权）合约</b></span>
+  <span>口径：<b>KQ.i@持仓量加权指数</b>，非主连</span>
+  <span>H/L/M：<b>汇总_全部品种.xlsx</b></span>
+  <span>更新时间：<b class="upd" id="fUpd">--</b></span>
+  <span style="margin-left:auto">设计：<b>公歧子</b>　微信：<b>gongqizi0</b></span>
+</div>
+
+<!-- ================= 设置抽屉 ================= -->
+<div class="mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <span>⚙️ 设置</span>
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn sm" id="btnCloseSet">关闭</button>
+  </div>
+  <div class="drawer-body">
+
+    <div class="sec">
+      <h4>天勤（快期）账号</h4>
+      <div class="row"><label>账号</label><input type="text" id="cfgTqUser" placeholder="快期账号 / 手机号"></div>
+      <div class="row"><label>密码</label><input type="password" id="cfgTqPass" placeholder="登录密码"></div>
+      <div class="note">
+        没有账号可到 <code>account.shinnytech.com</code> 免费注册。<br>
+        修改后点「保存并重连」即会断开当前连接、用新账号重新登录。
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label></label>
+        <button class="btn primary" id="btnSaveTq">保存并重连</button>
+        <span class="lbl" id="tqState"></span>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h4>邮件预警（只发邮件）</h4>
+      <div class="row"><label>启用邮件预警</label>
+        <label class="switch"><input type="checkbox" id="cfgMailOn"><i></i><span>开启后触发阈值即发信</span></label>
+      </div>
+      <div class="row"><label>非交易时段静默</label>
+        <label class="switch"><input type="checkbox" id="cfgTradingOnly"><i></i><span>闭市 / 周末 / 节假不发信</span></label>
+      </div>
+      <div class="row"><label>SMTP 服务器</label><input type="text" id="cfgHost" placeholder="smtp.126.com"></div>
+      <div class="row"><label>端口</label><input type="number" id="cfgPort" placeholder="465">
+        <label class="switch"><input type="checkbox" id="cfgSsl"><i></i><span>SSL</span></label>
+      </div>
+      <div class="row"><label>发件账号</label><input type="text" id="cfgMailUser" placeholder="xxx@126.com"></div>
+      <div class="row"><label>SMTP 授权码</label><input type="text" id="cfgAuth" placeholder="邮箱设置里生成的授权码"></div>
+      <div class="row"><label>发件人名称</label><input type="text" id="cfgFromName" placeholder="加权合约监控"></div>
+      <div class="row"><label>收件人</label><input type="text" id="cfgTo" placeholder="多个用英文逗号分隔"></div>
+      <div class="row"><label>抄送</label><input type="text" id="cfgCc" placeholder="可留空"></div>
+      <div class="row">
+        <label></label>
+        <button class="btn primary" id="btnSaveMail">保存邮件配置</button>
+        <button class="btn" id="btnTestMail">发送测试邮件</button>
+      </div>
+      <div class="note">
+        126 邮箱：设置 → POP3/SMTP/IMAP → 开启 SMTP → 生成<b>授权码</b>（不是登录密码）。<br>
+        预警采用<b>卡片式 HTML 邮件</b>，含时间 / 品种 / 现价 / 阈值 / 偏离度 / 涨跌幅 / 持仓 / 延时等。
+      </div>
+    </div>
+
+    <div class="sec">
+      <h4>阈值与预警参数</h4>
+      <div class="row">
+        <label>可设阈门槛</label>
+        <input type="range" id="cfgMin" min="60" max="90" step="1">
+        <span class="val" id="vMin">70%</span>
+      </div>
+      <div class="note">偏离度 ≥ 该门槛时，才能为该品种填充均线阈值。可调范围 60% ~ 90%。</div>
+      <div class="row" style="margin-top:10px"><label>默认周期</label><select class="sel" id="cfgThrKind"></select></div>
+      <div class="row"><label>默认均线</label><select class="sel" id="cfgThrMA"></select></div>
+      <div class="row"><label>默认偏移量</label><select class="sel" id="cfgThrOff"></select></div>
+      <div class="row"><label>默认偏移方向</label>
+        <select class="sel" id="cfgThrDir">
+          <option value="down">下偏移（阈值更低）</option>
+          <option value="up">上偏移（阈值更高）</option>
+        </select>
+      </div>
+      <div class="row"><label>同品种冷却</label><input type="number" id="cfgCooldown" placeholder="300">
+        <span class="lbl">秒</span></div>
+      <div class="row"><label>每小时上限</label><input type="number" id="cfgPerHour" placeholder="12">
+        <span class="lbl">封</span></div>
+      <div class="row"><label>每天上限</label><input type="number" id="cfgPerDay" placeholder="60">
+        <span class="lbl">封</span></div>
+      <div class="row">
+        <label></label>
+        <button class="btn primary" id="btnSavePanel">保存面板参数</button>
+      </div>
+      <div class="note">
+        预警判定采用 <b>1 分钟K线穿越</b>：上一根收盘在阈值一侧、当前根穿越到另一侧才算一次事件。
+        同一根 1 分钟K线内只报一次，价格长期停在阈值外<b>不会</b>重复发信。<br>
+        <b>阈值只有「已锁定」时才参与预警；解锁状态下一律不预警。</b>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h4>邮件守护状态</h4>
+      <div class="log" id="guardLog">--</div>
+    </div>
+
+    <div class="sec">
+      <h4>最近发信记录</h4>
+      <div class="log" id="mailLog">--</div>
+    </div>
+
+    <div class="sec">
+      <h4>运行日志</h4>
+      <div class="log" id="noteLog">--</div>
+    </div>
+
+    <div class="sec">
+      <h4>快捷键</h4>
+      <div class="note">
+        <b>Ctrl + Z</b> —— 一键隐身 / 取消隐身（把界面切换成一页普通文档）<br>
+        <b>Esc</b> —— 关闭设置面板
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<!-- ================= 隐身页 ================= -->
+<div class="ghost" id="ghost">
+  <div class="paper">
+    <h1>关于规范商品数据整理与归档工作的通知</h1>
+    <div class="meta">拟稿：综合业务科　　审核：办公室　　日期：<span id="gDate"></span></div>
+    <h2>一、总体要求</h2>
+    <p>为进一步规范数据整理、统计分析与归档工作，提升信息质量与工作效率，现就有关事项通知如下：
+       各岗位应按照"谁产生、谁负责"的原则，做好日常数据的采集、校核与留存，确保数据真实、准确、完整。</p>
+    <h2>二、重点任务</h2>
+    <ul>
+      <li>建立常态化的数据校核机制，重要指标做到每旬一核、每月一汇总。</li>
+      <li>规范电子文档命名与目录结构，历史资料按年度、类别归集整理。</li>
+      <li>加强统计分析成果的复用，形成可检索、可比对的基础资料库。</li>
+      <li>做好数据安全与权限管理，涉密资料不得随意复制、外传。</li>
+    </ul>
+    <h2>三、时间安排</h2>
+    <p>本通知自发布之日起施行。各单位于每月二十五日前完成本月资料归集，并报送汇总情况。
+       执行中的问题请及时反馈综合业务科。</p>
+    <h2>四、其他事项</h2>
+    <p>本通知未尽事宜，按既有规章制度执行。请各单位认真组织学习，抓好贯彻落实。</p>
+    <p style="margin-top:40px;text-align:right;color:#666">（本页为普通资料页面，可按 Ctrl+Z 返回）</p>
+  </div>
+</div>
+
+<script src="/静态/看板.js"></script>
+</body>
+</html>

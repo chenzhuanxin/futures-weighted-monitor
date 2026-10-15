@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+缓存/
+!缓存/.gitkeep
+*.log
