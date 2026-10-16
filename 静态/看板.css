@@ -280,6 +280,33 @@ a { color: var(--brand); }
 .pick .tg.down { color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }
 .picks-empty { padding: 26px 10px; text-align: center; color: var(--text-3); font-size: 13px; }
 
+/* 弹窗里的行内操作：解锁阈值 */
+.pick .acts { margin-left: auto; display: inline-flex; gap: 6px; flex: none; }
+.pick .act {
+  font-size: 12px; font-weight: 800;
+  border-radius: 8px; padding: 4px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: all .15s;
+}
+.pick .act.up:hover { border-color: var(--up); color: var(--up); background: var(--up-bg); }
+.pick .act.down:hover { border-color: var(--down); color: var(--down); background: var(--down-bg); }
+.pick .act:active { transform: translateY(1px); }
+.pick .act[disabled] { opacity: .5; cursor: not-allowed; }
+
+.picks-foot {
+  padding: 9px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
 /* ---------------- 双栏 ---------------- */
 .cols {
   max-width: 1680px;
@@ -316,33 +343,50 @@ a { color: var(--brand); }
 
 /* ---------------- 卡片 ---------------- */
 .card {
-  background: var(--panel);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--tint, var(--panel)) 24%, var(--panel));
+  border: 1.5px solid var(--frame, var(--line));
   border-radius: var(--radius);
   padding: 14px 16px;
   box-shadow: var(--shadow);
-  transition: box-shadow .18s, border-color .18s, transform .18s;
+  transition: box-shadow .18s, border-color .18s, transform .18s, background .18s;
   position: relative;
   overflow: hidden;
 }
 .card:hover { box-shadow: var(--shadow-lg); }
 
-/* 两栏卡片框色：高于平均值 = 红框；低于平均值 = 绿框 */
-.card.a {
-  border: 1.5px solid color-mix(in srgb, var(--up) 52%, var(--line));
-  background: color-mix(in srgb, var(--up-bg) 26%, var(--panel));
+/* 两栏卡片框色（最高优先，任何状态下都保持）：
+   高于平均值 = 红框；低于平均值 = 绿框 */
+.card.a { --frame: var(--up);   --tint: var(--up-bg); }
+.card.b { --frame: var(--down); --tint: var(--down-bg); }
+/* 左侧加一道同色竖条，进一步强化红 / 绿区分 */
+.card::before {
+  content: "";
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  background: var(--frame, var(--line));
+  opacity: .92;
 }
-.card.b {
-  border: 1.5px solid color-mix(in srgb, var(--down) 52%, var(--line));
-  background: color-mix(in srgb, var(--down-bg) 26%, var(--panel));
-}
-.card.a:hover { border-color: var(--up); box-shadow: var(--shadow-lg); }
-.card.b:hover { border-color: var(--down); box-shadow: var(--shadow-lg); }
+.card.a:hover { border-color: var(--up); }
+.card.b:hover { border-color: var(--down); }
 
-.card.hot { border-color: var(--warn-line); }
-.card.armed { border-color: var(--brand); }
-.card.trig-up { border-color: var(--up); background: color-mix(in srgb, var(--up-bg) 42%, var(--panel)); }
-.card.trig-down { border-color: var(--down); background: color-mix(in srgb, var(--down-bg) 42%, var(--panel)); }
+/* 达到门槛 / 已锁定 / 触发中：只用「外环 + 底色深浅」表达，不改红绿框色 */
+.card.hot {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 30%, transparent), var(--shadow);
+}
+.card.armed {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 36%, transparent), var(--shadow);
+}
+.card.hot.armed {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 42%, transparent),
+              0 0 0 4px color-mix(in srgb, var(--warn) 28%, transparent), var(--shadow);
+}
+.card.trig-up {
+  background: color-mix(in srgb, var(--up-bg) 54%, var(--panel));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--up) 36%, transparent), var(--shadow-lg);
+}
+.card.trig-down {
+  background: color-mix(in srgb, var(--down-bg) 54%, var(--panel));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--down) 36%, transparent), var(--shadow-lg);
+}
 
 .card-top { display: flex; align-items: center; gap: 11px; }
 .rank {
@@ -568,9 +612,6 @@ a { color: var(--brand); }
   padding: 7px 14px;
   font-size: 14px;
   font-weight: 700;
-  cursor: pointer;
-  font-family: inherit;
-} font-weight: 700;
   cursor: pointer;
   font-family: inherit;
 }

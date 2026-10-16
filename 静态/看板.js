@@ -563,9 +563,15 @@ function renderTop() {
 }
 
 /* ---------------- 品种明细弹窗（已锁定阈值 / 触发中） ---------------- */
-function openPicks(title, rows) {
+var PICKS_KIND = '';            // 'armed' | 'trig'（用于解锁后刷新弹窗内容）
+var PICKS_BUSY = {};            // code|side -> true，防重复点击
+
+function openPicks(title, rows, kind) {
   var box = $('#pickBox'), mask = $('#pickMask'), body = $('#pickBody');
+  if (kind) PICKS_KIND = kind;
   $('#pickTitle').textContent = title;
+  var foot = $('#pickFoot');
+  if (foot) foot.style.display = rows.length ? '' : 'none';
   if (!rows.length) {
     body.innerHTML = '<div class="picks-empty">当前没有符合条件的品种</div>';
   } else {
@@ -580,16 +586,84 @@ function openPicks(title, rows) {
           return '<span class="tg ' + (t.cls || '') + '">' + esc(t.text) + '</span>';
         }).join('') +
         '<span class="pv">' + esc(r.price) + '</span>' +
-        '<span class="pc">' + esc(r.pct) + '</span>';
-      el.title = '点击打开该品种行情';
+        '<span class="pc">' + esc(r.pct) + '</span>' +
+        '<span class="acts"></span>';
+      el.title = '点击整行打开该品种行情';
       el.addEventListener('click', function () {
         window.open('/行情?code=' + encodeURIComponent(r.code), '_blank');
+      });
+      // 行内「解锁」按钮：立即停止该侧阈值预警
+      var acts = $('.acts', el);
+      (r.acts || []).forEach(function (a) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'act ' + (a.side || '');
+        b.textContent = a.text;
+        b.title = a.title || '';
+        if (!a.can) { b.disabled = true; }
+        b.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          if (a.can) unlockThr(r, a);
+        });
+        acts.appendChild(b);
       });
       body.appendChild(el);
     });
   }
   mask.classList.add('on');
   box.classList.add('on');
+}
+
+/* 用服务端返回的 item 同步本地状态（S / CUR），再整体重绘 */
+function syncItem(item) {
+  if (!item || !item.code) return;
+  ['above', 'below'].forEach(function (k) {
+    var arr = (S && S[k]) || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].code === item.code) { arr[i] = item; break; }
+    }
+  });
+  CUR[item.code] = item;
+}
+
+function unlockThr(r, a) {
+  var key = r.code + '|' + a.side;
+  if (PICKS_BUSY[key]) return;
+  PICKS_BUSY[key] = true;
+  post('/api/threshold', {
+    code: r.code, side: a.side, action: 'lock', locked: false
+  }).then(function (res) {
+    delete PICKS_BUSY[key];
+    if (!res.ok) { toast(res.message || '解锁失败', 'bad'); return; }
+    if (res.item) {
+      var it = res.item;
+      var t = it[a.side] || {};
+      t.locked = false; t.armed = false;   // 立即生效，不等下一轮计算
+      syncItem(it);
+    } else {
+      var it2 = CUR[r.code];
+      if (it2 && it2[a.side]) { it2[a.side].locked = false; it2[a.side].armed = false; }
+    }
+    render();
+    toast(r.name + ' ' + (a.side === 'up' ? '上阈' : '下阈') + ' 已解锁（阈值保留，不再预警）', 'warn');
+    refreshPicks();
+  }).catch(function () {
+    delete PICKS_BUSY[key];
+    toast('解锁失败，请重试', 'bad');
+  });
+}
+
+/* 解锁后按当前类别重绘弹窗内容 */
+function refreshPicks() {
+  if (!$('#pickBox').classList.contains('on')) return;
+  if (PICKS_KIND === 'armed') {
+    var rows = armedRows();
+    openPicks('已锁定阈值的品种（' + rows.length + ' 个）', rows, 'armed');
+  } else if (PICKS_KIND === 'trig') {
+    var r2 = trigRows();
+    openPicks('触发中的品种（' + r2.length + ' 个 · 门槛 ' +
+      num(S.minPercent, 70) + '%）', r2, 'trig');
+  }
 }
 
 function closePicks() {
@@ -601,20 +675,32 @@ function closePicks() {
 function armedRows() {
   var rows = [];
   S.above.concat(S.below).forEach(function (it) {
-    var tags = [];
+    var tags = [], acts = [];
     ['up', 'down'].forEach(function (sd) {
       var t = it[sd] || {};
-      if (!t.armed) return;
-      tags.push({
-        cls: sd,
-        text: (sd === 'up' ? '上阈 ' : '下阈 ') + (t.value === null || t.value === undefined
-          ? '--' : fmtPrice(t.value, it.digits)) +
-          (t.locked ? ' 已锁定' : ' 未锁定')
-      });
+      if (!t.mode) return;
+      var locked = !!t.locked;
+      if (locked || t.armed) {
+        tags.push({
+          cls: sd,
+          text: (sd === 'up' ? '上阈 ' : '下阈 ') + (t.value === null || t.value === undefined
+            ? '--' : fmtPrice(t.value, it.digits)) +
+            (locked ? ' 已锁定' : ' 未锁定')
+        });
+      }
+      if (locked || t.armed) {
+        acts.push({
+          side: sd, can: locked,
+          text: locked ? ('🔓 解锁' + (sd === 'up' ? '上阈' : '下阈')) : '已解锁',
+          title: locked
+            ? '解锁后该阈值立即退出预警（阈值保留，可再锁定）'
+            : '该阈值当前已解锁，不参与预警'
+        });
+      }
     });
     if (!tags.length) return;
     rows.push({
-      code: it.code, name: it.name, exch: it.exch, tags: tags,
+      code: it.code, name: it.name, exch: it.exch, tags: tags, acts: acts,
       price: fmtPrice(it.price, it.digits), pct: num(it.percent, 0).toFixed(2) + '%'
     });
   });
@@ -636,11 +722,23 @@ function trigRows() {
       tags.push({ cls: '', text: '阈值 ' + fmtPrice(al.limit, dg) });
     }
     if (al.thrLabel && al.thrLabel !== '-') tags.push({ cls: '', text: al.thrLabel });
+    // 已锁定的阈值都可以在弹窗里直接解锁，解锁即停止后续预警
+    var acts = [];
+    ['up', 'down'].forEach(function (sd) {
+      var t = it[sd] || {};
+      if (!t.mode || !t.locked) return;
+      acts.push({
+        side: sd, can: true,
+        text: '🔓 解锁' + (sd === 'up' ? '上阈' : '下阈'),
+        title: '解锁后该阈值立即退出预警（阈值保留，可再锁定）'
+      });
+    });
     rows.push({
       code: al.code,
       name: it.name || al.name || al.code,
       exch: it.exch || al.exch || '',
       tags: tags,
+      acts: acts,
       price: fmtPrice(al.price || it.price, dg),
       pct: (it.percent === undefined || it.percent === null
         ? '' : num(it.percent, 0).toFixed(2) + '%')
@@ -794,15 +892,15 @@ function bind() {
   });
   $('#btnGhost').addEventListener('click', function () { setGhost(!GHOST); });
 
-  // 统计卡点击 → 品种明细
+  // 统计卡点击 → 品种明细（行内可直接解锁）
   $('#cardArmed').addEventListener('click', function () {
     var rows = armedRows();
-    openPicks('已锁定阈值的品种（' + rows.length + ' 个）', rows);
+    openPicks('已锁定阈值的品种（' + rows.length + ' 个）', rows, 'armed');
   });
   $('#cardTrig').addEventListener('click', function () {
     var rows = trigRows();
     openPicks('触发中的品种（' + rows.length + ' 个 · 门槛 ' +
-      num(S.minPercent, 70) + '%）', rows);
+      num(S.minPercent, 70) + '%）', rows, 'trig');
   });
   $('#pickClose').addEventListener('click', closePicks);
   $('#pickMask').addEventListener('click', closePicks);
