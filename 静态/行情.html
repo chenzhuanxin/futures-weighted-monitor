@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>加权合约行情</title>
+<title>品种行情 · 加权 + 全部合约</title>
 <link rel="stylesheet" href="/静态/看板.css">
 <style>
   body { padding-bottom: 16px; }
@@ -13,7 +13,7 @@
     box-shadow: var(--shadow); padding: 14px 18px; display: flex; align-items: center;
     gap: 20px; flex-wrap: wrap;
   }
-  .hdr .title { display: flex; align-items: baseline; gap: 10px; }
+  .hdr .title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .hdr h1 { font-size: 21px; margin: 0; font-weight: 800; letter-spacing: .3px; }
   .hdr .code {
     font-family: var(--mono); font-size: 12px; color: var(--text-3);
@@ -27,10 +27,7 @@
   .hdr .grid div b { display: block; font-family: var(--mono); font-size: 14px;
                      color: var(--text); font-weight: 700; margin-top: 3px; }
 
-  .bar2 {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    margin: 12px 0 0;
-  }
+  .bar2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 0; }
   .tabs { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line);
           border-radius: 11px; padding: 4px; box-shadow: var(--shadow); flex-wrap: wrap; }
   .tab {
@@ -41,27 +38,12 @@
   .tab:hover { background: var(--panel-2); color: var(--text); }
   .tab.on { background: var(--brand); color: #fff; box-shadow: 0 3px 10px rgba(37, 99, 235, .3); }
 
-  .ctwrap { display: flex; align-items: center; gap: 9px; max-width: 100%; }
+  .ctwrap { display: flex; align-items: center; gap: 9px; max-width: 100%; flex-wrap: wrap; }
   .lab2 { font-size: 12px; font-weight: 700; color: var(--text-3); flex: none; }
-  .ctabs { overflow-x: auto; max-width: 100%; padding: 4px; }
-  .ctabs::-webkit-scrollbar { height: 5px; }
-  .ctabs::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
-  .ctab {
-    border: none; background: transparent; color: var(--text-2);
-    font-family: inherit; font-size: 12.5px; font-weight: 600;
-    padding: 5px 11px; border-radius: 8px; cursor: pointer;
-    transition: all .14s; white-space: nowrap; display: inline-flex;
-    align-items: center; gap: 5px;
-  }
-  .ctab:hover { background: var(--panel-2); color: var(--text); }
-  .ctab.on { background: var(--brand); color: #fff; box-shadow: 0 3px 10px rgba(37, 99, 235, .3); }
-  .ctab.w { background: color-mix(in srgb, var(--brand) 9%, var(--panel));
-            border: 1px dashed color-mix(in srgb, var(--brand) 45%, transparent); }
-  .ctab.w.on { background: var(--brand); border: 1px solid var(--brand); color: #fff; }
-  .ctab .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warn); flex: none; }
-  .ctab.on .dot { background: #fff; }
-  .ctab .oi { font-size: 10.5px; opacity: .68; font-family: var(--mono); }
-  .ct-load { font-size: 12px; color: var(--text-3); padding: 5px 10px; }
+  #selCt { min-width: 320px; max-width: 46vw; }
+  #ctFilter { width: 190px; }
+  .ct-sum { font-size: 12px; color: var(--text-3); }
+  .ct-sum b { color: var(--text-2); font-family: var(--mono); }
 
   .inds { display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
           background: var(--panel); border: 1px solid var(--line);
@@ -77,9 +59,55 @@
   .chk.on { background: var(--brand); border-color: var(--brand); color: #fff; }
   .chk:hover { border-color: var(--brand); }
 
-  #chart { width: 100%; height: 660px; margin-top: 12px;
+  #chart { width: 100%; height: 620px; margin-top: 12px;
            background: var(--panel); border: 1px solid var(--line);
            border-radius: var(--radius); box-shadow: var(--shadow); }
+
+  /* ---------------- 全部合约面板 ---------------- */
+  .panel { margin-top: 12px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .phd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+         padding: 11px 16px; border-bottom: 1px solid var(--line); }
+  .phd h3 { margin: 0; font-size: 15px; font-weight: 800; display: flex; align-items: baseline; gap: 9px; }
+  .phd .sub { font-size: 12.5px; font-weight: 700; color: var(--text-3); }
+  .phd .mini { margin-left: auto; font-size: 12px; color: var(--text-3); line-height: 1.6; }
+  .tscroll { overflow: auto; max-height: 380px; }
+  .tscroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .tscroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+
+  table.ct { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.ct th {
+    text-align: right; padding: 8px 12px; font-size: 12px; font-weight: 700;
+    color: var(--text-3); background: var(--panel-2);
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+    position: sticky; top: 0; z-index: 2;
+  }
+  table.ct th.l, table.ct td.l { text-align: left; }
+  table.ct td {
+    padding: 7px 12px; text-align: right; font-family: var(--mono);
+    border-bottom: 1px solid var(--line-2); white-space: nowrap; color: var(--text);
+  }
+  table.ct td.nm { font-family: inherit; }
+  table.ct tbody tr { cursor: pointer; transition: background .12s; }
+  table.ct tbody tr:hover { background: var(--panel-2); }
+  table.ct tbody tr.sel { background: color-mix(in srgb, var(--brand) 11%, var(--panel)); }
+  table.ct tbody tr.sel td { font-weight: 800; }
+  table.ct tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--brand); }
+  table.ct tr.wrow td { background: color-mix(in srgb, var(--brand) 5%, transparent); }
+  table.ct tr.wrow.sel td { background: color-mix(in srgb, var(--brand) 11%, var(--panel)); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 800;
+    border-radius: 20px; padding: 2px 8px; border: 1px solid var(--line);
+    color: var(--text-3); background: var(--panel-2); font-family: inherit;
+  }
+  .badge.w { color: var(--brand); border-color: var(--brand);
+             background: color-mix(in srgb, var(--brand) 10%, var(--panel)); }
+  .badge.main { color: var(--warn); border-color: var(--warn-line); background: var(--warn-bg); }
+  .cu { color: var(--up); }
+  .cd { color: var(--down); }
+  .cf { color: var(--text-3); }
+  .ct-empty { padding: 24px 14px; text-align: center; color: var(--text-3); font-size: 13px; }
+
   .foot { max-width: 1560px; margin: 12px auto 0; padding: 0 18px;
           color: var(--text-3); font-size: 12px; line-height: 1.9;
           display: flex; flex-wrap: wrap; gap: 6px 18px; }
@@ -94,6 +122,7 @@
     <div class="title">
       <h1 id="hName">加载中…</h1>
       <span class="code" id="hCode">--</span>
+      <span class="badge" id="hKind">--</span>
     </div>
     <div>
       <div class="big" id="hPrice">--</div>
@@ -118,7 +147,10 @@
   <div class="bar2">
     <div class="ctwrap">
       <span class="lab2">合约</span>
-      <div class="tabs ctabs" id="ctabs"><span class="ct-load">加载合约…</span></div>
+      <select class="sel" id="selCt"><option>加载合约…</option></select>
+      <input type="search" id="ctFilter" class="thr-input" style="width:190px;text-align:left"
+             placeholder="筛选合约（代码/月份）" autocomplete="off">
+      <span class="ct-sum" id="ctSum"></span>
     </div>
   </div>
 
@@ -140,14 +172,43 @@
   </div>
 
   <div id="chart"></div>
+
+  <div class="panel">
+    <div class="phd">
+      <h3>全部合约行情 <span class="sub" id="ctTitle">--</span></h3>
+      <span class="mini">
+        点任意一行 → 上方图表切到该合约　·　
+        <b>加权（仓权）</b> = 天勤 <b>KQ.i@</b> 按持仓量加权，非主连　·　
+        主力按持仓量判定（橙色标签）
+      </span>
+    </div>
+    <div class="tscroll">
+      <table class="ct" id="ctTable">
+        <thead>
+          <tr>
+            <th class="l">合约代码</th>
+            <th class="l">名称</th>
+            <th class="l">属性</th>
+            <th>最新价</th>
+            <th>涨跌</th>
+            <th>涨跌幅</th>
+            <th>成交量</th>
+            <th>持仓量</th>
+            <th>行情时间</th>
+          </tr>
+        </thead>
+        <tbody id="ctBody"><tr><td colspan="9" class="ct-empty">加载合约…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <div class="foot">
   <span>品种：<b id="fName">--</b></span>
-  <span>加权合约：<b id="fTq">--</b></span>
+  <span>当前合约：<b id="fTq">--</b></span>
   <span>周期：<b id="fKind">--</b></span>
   <span>K线根数：<b id="fBars">--</b></span>
-  <span>数据源：<b>天勤 TqSdk 加权（仓权）指数合约</b></span>
+  <span>数据源：<b>天勤 TqSdk · 加权（仓权）+ 全部真实月份合约</b></span>
   <span style="margin-left:auto">设计：<b>公歧子</b>　微信：<b>gongqizi0</b></span>
 </div>
 

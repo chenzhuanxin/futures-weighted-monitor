@@ -137,51 +137,116 @@ function bindInds() {
   });
 }
 
-/* ---------------- 合约选择 ---------------- */
+/* ---------------- 合约列表（加权 + 全部真实月份合约） ----------------
+   口径参照 china-futures-data-terminal：一个品种下先列「加权（仓权）」，
+   再列全部真实交易合约，主力按持仓量判定；点任意一行切换上方图表。 */
 function loadContracts() {
   return fetch('/api/contracts?code=' + encodeURIComponent(ST.code))
     .then(function (r) { return r.json(); })
     .then(function (r) {
-      if (!r || !r.ok) { renderCtabs(null); return; }
+      if (!r || !r.ok) { renderContracts(null); return; }
       ST.contracts = r;
-      renderCtabs(r);
+      renderContracts(r);
     })
-    .catch(function () { renderCtabs(null); });
+    .catch(function () { renderContracts(null); });
 }
 
-function renderCtabs(r) {
-  var box = $('#ctabs');
-  box.innerHTML = '';
-  var head = document.createElement('button');
-  head.className = 'ctab w' + (ST.sym ? '' : ' on');
-  head.textContent = '加权（仓权）';
-  head.title = '按持仓量加权的品种合约（默认）';
-  head.addEventListener('click', function () { pickSym(''); });
-  box.appendChild(head);
+/* 把服务端返回整理成统一的行数组：[{sym,name,attr,badge,quote...}] */
+function contractRows(r) {
+  if (!r) return [];
+  var rows = [];
+  var w = r.weighted || {};
+  rows.push({
+    sym: '', symShow: w.sym || '', isW: true, isMain: false,
+    name: w.name || ((r.name || '') + '加权'),
+    q: w
+  });
+  (r.items || []).forEach(function (it) {
+    rows.push({
+      sym: it.sym, symShow: it.sym, isW: false, isMain: !!it.isMain,
+      name: it.name || it.month || it.sym,
+      q: it
+    });
+  });
+  return rows;
+}
 
-  if (!r || !r.items || !r.items.length) {
-    var s = document.createElement('span');
-    s.className = 'ct-load';
-    s.textContent = r ? '（无真实合约）' : '（合约列表加载失败）';
-    box.appendChild(s);
+function renderContracts(r) {
+  var rows = contractRows(r);
+  var sel = $('#selCt'), body = $('#ctBody');
+
+  if (!r || !rows.length) {
+    sel.innerHTML = '<option>（合约列表加载失败）</option>';
+    body.innerHTML = '<tr><td colspan="9" class="ct-empty">' +
+      (r ? '该品种没有可显示的合约' : '合约列表加载失败，请确认天勤已连接') + '</td></tr>';
+    $('#ctTitle').textContent = '--';
+    $('#ctSum').textContent = '';
     return;
   }
-  r.items.forEach(function (it) {
-    var b = document.createElement('button');
-    b.className = 'ctab' + (ST.sym === it.sym ? ' on' : '');
-    b.innerHTML = (it.isMain ? '<span class="dot"></span>' : '') +
-      esc2(it.month || it.name) +
-      '<span class="oi">' + shortNum(it.oi) + '</span>';
-    b.title = (it.name || it.sym) + '　现价 ' + fmt(it.last, it.digits) +
-      '　持仓 ' + shortNum(it.oi) + (it.isMain ? '　（主力）' : '');
-    b.addEventListener('click', function () { pickSym(it.sym); });
-    box.appendChild(b);
+
+  // ---- 下拉 ----
+  var keep = ST.sym;
+  sel.innerHTML = '';
+  rows.forEach(function (row) {
+    var o = document.createElement('option');
+    o.value = row.sym;
+    o.textContent = (row.isW ? '加权（仓权） · ' : '') + row.name +
+      '　[' + (row.symShow || '加权') + ']' + (row.isMain ? '　主力' : '');
+    sel.appendChild(o);
+  });
+  sel.value = keep;
+  sel.onchange = function () { pickSym(sel.value); };
+
+  // ---- 表格 ----
+  body.innerHTML = '';
+  rows.forEach(function (row) {
+    var q = row.q || {};
+    var dg = q.digits === undefined ? ST.digits : q.digits;
+    var chg = num(q.change, 0), pct = num(q.pct, 0);
+    var cls = chg > 0 ? 'cu' : (chg < 0 ? 'cd' : 'cf');
+    var tr = document.createElement('tr');
+    tr.className = (row.isW ? 'wrow' : '') + (row.sym === ST.sym ? ' sel' : '');
+    tr.dataset.sym = row.sym;
+    tr.dataset.key = ((row.symShow || '') + ' ' + (row.name || '')).toLowerCase();
+    tr.innerHTML =
+      '<td class="l">' + esc2(row.symShow || (row.isW ? '加权' : '--')) + '</td>' +
+      '<td class="l nm">' + esc2(row.name) + '</td>' +
+      '<td class="l">' +
+        (row.isW ? '<span class="badge w">加权（仓权）</span>' : '<span class="badge">真实合约</span>') +
+        (row.isMain ? ' <span class="badge main">主力</span>' : '') +
+      '</td>' +
+      '<td class="' + cls + '">' + fmt(q.last, dg) + '</td>' +
+      '<td class="' + cls + '">' + (chg >= 0 ? '+' : '') + fmt(chg, dg) + '</td>' +
+      '<td class="' + cls + '">' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%</td>' +
+      '<td>' + shortNum(q.volume) + '</td>' +
+      '<td>' + shortNum(q.oi) + '</td>' +
+      '<td>' + esc2((q.ts || '--').slice(-8)) + '</td>';
+    tr.title = (row.isW ? '加权（仓权）合约，按持仓量加权' : '真实交易合约') +
+      (row.isMain ? ' · 当前主力（持仓量最大）' : '') + '　点击切换图表';
+    tr.addEventListener('click', function () { pickSym(row.sym); });
+    body.appendChild(tr);
+  });
+
+  var real = (r.items || []).length;
+  $('#ctTitle').textContent = (r.name || '') + '　加权 1 个 + 真实合约 ' + real + ' 个';
+  $('#ctSum').innerHTML = '加权 <b>1</b> · 真实合约 <b>' + real + '</b> · 主力 <b>' +
+    esc2((r.main || '').split('.').pop() || '--') + '</b>';
+  applyFilter();
+}
+
+/* 筛选框：只显示匹配的合约行（回车直接切到第一行） */
+function applyFilter() {
+  var kw = String(($('#ctFilter') || {}).value || '').trim().toLowerCase();
+  Array.prototype.forEach.call($('#ctBody').children, function (tr) {
+    if (!tr.dataset || tr.dataset.key === undefined) return;
+    tr.style.display = (!kw || tr.dataset.key.indexOf(kw) >= 0) ? '' : 'none';
   });
 }
 
 function pickSym(sym) {
+  sym = sym || '';
   if (ST.sym === sym) return;
-  ST.sym = sym || '';
+  ST.sym = sym;
   var nm = '';
   if (ST.sym && ST.contracts) {
     (ST.contracts.items || []).forEach(function (it) {
@@ -189,7 +254,7 @@ function pickSym(sym) {
     });
   }
   ST.symName = nm;
-  if (ST.contracts) renderCtabs(ST.contracts);
+  if (ST.contracts) renderContracts(ST.contracts);
   try {
     var u = new URL(location.href);
     if (ST.sym) u.searchParams.set('sym', ST.sym);
@@ -213,9 +278,13 @@ function load(first) {
     ST.digits = d.digits || 2;
     ST.name = d.name || '';
     ST.tq = d.tq || '';
-    ST.sym = d.sym || ST.sym || '';
-    ST.symName = (d.symName && !d.isWeighted) ? d.symName : (ST.symName || '');
     ST.isWeighted = (d.isWeighted !== false);
+    // 加权时 sym 保持空字符串（与合约列表行的取值一致），真实合约时回显其代码
+    if (!ST.isWeighted && d.sym) ST.sym = d.sym;
+    else if (ST.isWeighted) ST.sym = '';
+    ST.symName = (d.symName && !ST.isWeighted) ? d.symName : (ST.symName || '');
+    var selEl = $('#selCt');
+    if (selEl && selEl.value !== ST.sym && selEl.options.length > 1) selEl.value = ST.sym;
     ST.kindCn = (d.kindCn || {})[ST.kind] || d.kindCn || '';
     renderHeader(d);
     draw();
@@ -233,6 +302,17 @@ function renderHeader(d) {
   $('#hName').textContent = isW ? ((d.name || '') + ' 加权')
                                 : ((d.name || '') + ' · ' + symLabel);
   $('#hCode').textContent = (isW ? (d.tq || '') : (d.sym || '')) + '　' + (d.exch || '');
+  var isMain = false;
+  if (!isW && ST.contracts) {
+    (ST.contracts.items || []).forEach(function (it) {
+      if (it.sym === ST.sym && it.isMain) isMain = true;
+    });
+  }
+  var kb = $('#hKind');
+  if (kb) {
+    kb.className = 'badge' + (isW ? ' w' : (isMain ? ' main' : ''));
+    kb.textContent = isW ? '加权（仓权）' : ('真实合约' + (isMain ? ' · 主力' : ''));
+  }
   document.title = (d.name || '') + (isW ? ' 加权合约行情' : ' ' + symLabel + ' 行情');
   var last = num(q.last, 0);
   ST.live = last;
@@ -507,6 +587,18 @@ window.addEventListener('DOMContentLoaded', function () {
   ST.kind = (k && KIND_CN[k]) ? k : 'timeshare';
   bindInds();
   initTabs();
+  var f = $('#ctFilter');
+  if (f) {
+    f.addEventListener('input', applyFilter);
+    f.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      var first = null;
+      Array.prototype.forEach.call($('#ctBody').children, function (tr) {
+        if (!first && tr.style.display !== 'none' && tr.dataset.sym !== undefined) first = tr;
+      });
+      if (first) pickSym(first.dataset.sym);
+    });
+  }
   load(true);
   loadContracts();
   ST.timer = setInterval(function () { load(false); }, 2000);
