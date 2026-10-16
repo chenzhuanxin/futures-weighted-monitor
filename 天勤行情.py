@@ -232,6 +232,49 @@ def _quote_batch(api, syms):
     return out
 
 
+def _split_tq(sym: str):
+    """``KQ.i@SHFE.cu`` → ``('SHFE', 'cu')``；非加权合约返回 ('','')。"""
+    if not sym or "@" not in sym:
+        return ("", "")
+    tail = sym.split("@", 1)[1]
+    if "." not in tail:
+        return ("", "")
+    ex, prod = tail.split(".", 1)
+    return (ex, prod)
+
+
+def _contract_syms(api, ex: str, prod: str):
+    """某交易所某品种的全部**真实月份合约**（不含 KQ.* 衍生代码、不含已下市）。"""
+    syms = []
+    for kw in ({"ins_class": "FUTURE", "exchange_id": ex, "product_id": prod,
+                "expired": False},
+               {"ins_class": "FUTURE", "exchange_id": ex, "product_id": prod},
+               {"ins_class": "FUTURE", "exchange_id": ex}):
+        try:
+            syms = list(api.query_quotes(**kw) or [])
+            break
+        except TypeError:                                           # noqa: BLE001
+            continue
+        except Exception:                                           # noqa: BLE001
+            continue
+    lo = prod.lower()
+    out = []
+    for s in syms:
+        if not s or "@" in s or s.startswith("KQ") or s.startswith("SSE"):
+            continue
+        tail = s.split(".", 1)[1] if "." in s else ""
+        if not tail.lower().startswith(lo):
+            continue
+        out.append(s)
+    return sorted(set(out))
+
+
+def _month_of(sym: str) -> str:
+    """``SHFE.cu2611`` → ``2611``（用于排序与展示）。"""
+    tail = sym.split(".", 1)[1] if "." in sym else sym
+    return "".join(ch for ch in tail if ch.isdigit())[-4:]
+
+
 def _kline(api, subs, sym, sec, n):
     """取 K 线（订阅式，同一 (sym,sec) 复用同一 DataFrame）。"""
     key = (sym, sec)
@@ -336,9 +379,12 @@ class TianqinSource:
                 import tqsdk                                          # noqa: F401
             except Exception as exc:                                # noqa: BLE001
                 import sys as _sys
+                # 正常情况下 服务端.py 启动时的「环境自检」已自动换用装了天勤的
+                # 解释器 / 自动安装，走不到这里。真走到这里说明自动修复也失败了。
                 self.err = (
-                    "当前 Python 未安装天勤 tqsdk（%s: %s）。"
-                    "当前解释器：%s —— 请执行：\"%s\" -m pip install tqsdk"
+                    "当前 Python 未安装天勤 tqsdk（%s: %s）。当前解释器：%s"
+                    " —— 请执行：\"%s\" -m pip install tqsdk"
+                    "（或重新双击 启动面板.bat，它会自动挑选/安装）"
                     % (type(exc).__name__, exc, _sys.executable, _sys.executable))
                 return False
             if self.actor and self.actor.alive:
@@ -407,11 +453,93 @@ class TianqinSource:
             }
         return out
 
-    # ---------------- K 线 ---------------- #
-    def kline(self, code: str, kind: str, limit: int | None = None) -> dict:
-        if kind == "timeshare":
-            return self.timeshare(code)
+    # ---------------- 合约列表（加权 + 真实月份合约） ---------------- #
+    def contracts(self, code: str) -> dict:
+        """返回该品种可看的合约：加权（仓权）+ 全部真实月份合约。"""
         sym = PT.TQ.get(code)
+        if not sym:
+            return {"ok": False, "message": "该品种没有加权合约"}
+        ex, prod = _split_tq(sym)
+        if not ex or not prod:
+            return {"ok": False, "message": "加权合约代码无法解析：%s" % sym}
+        if not self.start():
+            return {"ok": False, "message": self.err or "天勤未连接"}
+
+        try:
+            syms = self.actor.call(_contract_syms, ex, prod, timeout=40) or []
+        except Exception as exc:                                    # noqa: BLE001
+            syms = []
+        try:
+            qs = self.actor.call(_quote_batch, syms, timeout=90) if syms else []
+        except Exception as exc:                                    # noqa: BLE001
+            qs = []
+        try:
+            wq = (self.actor.call(_quote_batch, [sym], timeout=45) or [{}])[0]
+        except Exception as exc:                                    # noqa: BLE001
+            wq = {}
+
+        items = []
+        for q in qs:
+            s = q.get("symbol") or ""
+            if not s or q.get("expired"):
+                continue
+            items.append({
+                "sym": s,
+                "month": _month_of(s),
+                "name": q.get("name") or _month_of(s),
+                "last": q.get("last") or 0.0,
+                "open": q.get("open") or 0.0,
+                "high": q.get("high") or 0.0,
+                "low": q.get("low") or 0.0,
+                "presettle": q.get("presettle") or 0.0,
+                "change": q.get("change") or 0.0,
+                "pct": q.get("pct") or 0.0,
+                "oi": int(q.get("oi") or 0),
+                "volume": int(q.get("volume") or 0),
+                "digits": int(q.get("digits") or 2),
+                "ts": (q.get("datetime") or "")[:19],
+            })
+        items.sort(key=lambda x: (x["month"], x["sym"]))
+        main_sym = ""
+        if items:
+            main_sym = max(items, key=lambda x: (x["oi"], x["volume"]))["sym"]
+        for it in items:
+            it["isMain"] = (it["sym"] == main_sym)
+
+        return {
+            "ok": True,
+            "code": code,
+            "name": PT.NAME.get(code, code),
+            "exch": PT.EXCH.get(code, ""),
+            "weighted": {
+                "sym": sym,
+                "label": "加权（仓权）",
+                "name": (PT.NAME.get(code, code) or "") + "加权",
+                "last": wq.get("last") or 0.0,
+                "open": wq.get("open") or 0.0,
+                "high": wq.get("high") or 0.0,
+                "low": wq.get("low") or 0.0,
+                "presettle": wq.get("presettle") or 0.0,
+                "change": wq.get("change") or 0.0,
+                "pct": wq.get("pct") or 0.0,
+                "oi": int(wq.get("oi") or 0),
+                "volume": int(wq.get("volume") or 0),
+                "digits": int(wq.get("digits") or 2),
+                "ts": (wq.get("datetime") or "")[:19],
+            },
+            "main": main_sym,
+            "items": items,
+            "count": len(items),
+        }
+
+    # ---------------- K 线 ---------------- #
+    def kline(self, code: str, kind: str, limit: int | None = None,
+              sym: str | None = None) -> dict:
+        """kind 周期 K 线。sym 为空 = 加权合约；给了 sym = 指定真实合约。"""
+        if kind == "timeshare":
+            return self.timeshare(code, sym=sym)
+        if not sym:
+            sym = PT.TQ.get(code)
         sec = KIND_SEC.get(kind)
         if not sym or not sec:
             return {"kind": kind, "code": code, "bars": [], "count": 0}
@@ -426,7 +554,9 @@ class TianqinSource:
             self.err = str(exc)[:200]
             return {"kind": kind, "code": code, "bars": [], "count": 0,
                     "error": self.err}
-        return {"kind": kind, "code": code, "name": PT.NAME.get(code, ""),
+        is_w = (sym == PT.TQ.get(code))
+        return {"kind": kind, "code": code, "sym": sym, "isWeighted": bool(is_w),
+                "name": (PT.NAME.get(code, "") + "加权") if is_w else sym,
                 "bars": bars, "count": len(bars), "kindCn": KIND_CN.get(kind, kind)}
 
     def dayk(self, code: str) -> list:
@@ -456,8 +586,9 @@ class TianqinSource:
         return {c: _bars_from_df(a) for c, a in zip(cs, arrs)}
 
     # ---------------- 分时 ---------------- #
-    def timeshare(self, code: str) -> dict:
-        sym = PT.TQ.get(code)
+    def timeshare(self, code: str, sym: str | None = None) -> dict:
+        if not sym:
+            sym = PT.TQ.get(code)
         if not sym:
             return {"kind": "timeshare", "code": code, "bars": [], "count": 0}
         if not self.start():
@@ -483,7 +614,10 @@ class TianqinSource:
                         "t": b["t"], "price": b["c"],
                         "avg": round(cum_pv / cum_v, 6) if cum_v > 0 else b["c"],
                         "v": v})
-        return {"kind": "timeshare", "code": code, "name": PT.NAME.get(code, ""),
+        is_w = (sym == PT.TQ.get(code))
+        return {"kind": "timeshare", "code": code, "sym": sym,
+                "isWeighted": bool(is_w),
+                "name": (PT.NAME.get(code, "") + "加权") if is_w else sym,
                 "bars": out, "count": len(out), "kindCn": "分时"}
 
 

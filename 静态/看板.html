@@ -34,13 +34,27 @@ try {
   </div>
 </div>
 
+<!-- ================= 异常提示条 ================= -->
+<div class="alertbar" id="alertBar" style="display:none">
+  <span class="ic">⚠</span>
+  <span class="msg" id="alertMsg"></span>
+  <button class="btn sm" id="alertCopy">复制修复命令</button>
+  <button class="btn sm ghost" id="alertClose">知道了</button>
+</div>
+
 <!-- ================= 概览 ================= -->
 <div class="stats">
   <div class="stat brand"><div class="k">分析品种</div><div class="v" id="sTotal">--<small>个</small></div></div>
   <div class="stat up"><div class="k">高于平均值品种</div><div class="v" id="sAbove">--<small>个</small></div></div>
   <div class="stat down"><div class="k">低于平均值品种</div><div class="v" id="sBelow">--<small>个</small></div></div>
-  <div class="stat warn"><div class="k">已锁定阈值</div><div class="v" id="sArmed">--<small>个</small></div></div>
-  <div class="stat warn"><div class="k">触发中 / 门槛</div><div class="v" id="sTrig">--<small id="sMin">70%</small></div></div>
+  <div class="stat warn clickable" id="cardArmed" title="点击查看是哪些品种锁定了阈值">
+    <div class="k">已锁定阈值 <span class="hint-i">🔍</span></div>
+    <div class="v" id="sArmed">--<small>个</small></div>
+  </div>
+  <div class="stat warn clickable" id="cardTrig" title="点击查看触发中的品种">
+    <div class="k">触发中 / 门槛 <span class="hint-i">🔍</span></div>
+    <div class="v" id="sTrig">--<small id="sMin">70%</small></div>
+  </div>
   <div class="stat brand"><div class="k">数据延时</div><div class="v" id="sDelay" style="font-size:20px">--</div></div>
 </div>
 
@@ -62,6 +76,16 @@ try {
     </div>
     <div class="list" id="listBelow"></div>
   </div>
+</div>
+
+<!-- ================= 品种明细弹窗 ================= -->
+<div class="picks-mask" id="pickMask"></div>
+<div class="picks" id="pickBox" role="dialog" aria-label="品种明细">
+  <div class="picks-head">
+    <span id="pickTitle">明细</span>
+    <button class="btn sm ghost" id="pickClose">关闭</button>
+  </div>
+  <div class="picks-body" id="pickBody"></div>
 </div>
 
 <div class="footer">

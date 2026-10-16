@@ -182,7 +182,7 @@ function makeCard(it, side) {
     '</div>' +
 
     '<div class="card-foot">' +
-      '<button class="btn-view">📊 查看加权行情</button>' +
+      '<button class="btn-view">📊 查看行情</button>' +
       '<span class="lbl k-mkt"></span>' +
       '<span class="hint k-hint"></span>' +
     '</div>' +
@@ -548,6 +548,7 @@ function renderTop() {
       esc(conn.err || S.error || '未连接') + '</span>';
   }
   $('#chipDelay').innerHTML = '延时 <b>' + esc(S.delayLabel) + '</b>';
+  updateAlert(conn);
   $('#chipUpd').innerHTML = '更新 <b>' + esc(S.updated.split(' ')[1] || '--') + '</b>';
   var g = S.guard || {};
   var gc = $('#chipGuard');
@@ -559,6 +560,140 @@ function renderTop() {
   gc.title = '触发中 ' + (g.triggering || 0) + ' · 冷却抑制 ' +
     ((g.suppressed || {}).cooldown || 0) + ' · 配额抑制 ' + ((g.suppressed || {}).quota || 0) +
     ' · 闭市静默 ' + ((g.suppressed || {}).closed || 0);
+}
+
+/* ---------------- 品种明细弹窗（已锁定阈值 / 触发中） ---------------- */
+function openPicks(title, rows) {
+  var box = $('#pickBox'), mask = $('#pickMask'), body = $('#pickBody');
+  $('#pickTitle').textContent = title;
+  if (!rows.length) {
+    body.innerHTML = '<div class="picks-empty">当前没有符合条件的品种</div>';
+  } else {
+    body.innerHTML = '';
+    rows.forEach(function (r) {
+      var el = document.createElement('div');
+      el.className = 'pick';
+      el.innerHTML =
+        '<span class="nm">' + esc(r.name) + '</span>' +
+        '<span class="ex">' + esc(r.exch || '') + '</span>' +
+        (r.tags || []).map(function (t) {
+          return '<span class="tg ' + (t.cls || '') + '">' + esc(t.text) + '</span>';
+        }).join('') +
+        '<span class="pv">' + esc(r.price) + '</span>' +
+        '<span class="pc">' + esc(r.pct) + '</span>';
+      el.title = '点击打开该品种行情';
+      el.addEventListener('click', function () {
+        window.open('/行情?code=' + encodeURIComponent(r.code), '_blank');
+      });
+      body.appendChild(el);
+    });
+  }
+  mask.classList.add('on');
+  box.classList.add('on');
+}
+
+function closePicks() {
+  $('#pickMask').classList.remove('on');
+  $('#pickBox').classList.remove('on');
+}
+
+/* 已锁定阈值的品种明细 */
+function armedRows() {
+  var rows = [];
+  S.above.concat(S.below).forEach(function (it) {
+    var tags = [];
+    ['up', 'down'].forEach(function (sd) {
+      var t = it[sd] || {};
+      if (!t.armed) return;
+      tags.push({
+        cls: sd,
+        text: (sd === 'up' ? '上阈 ' : '下阈 ') + (t.value === null || t.value === undefined
+          ? '--' : fmtPrice(t.value, it.digits)) +
+          (t.locked ? ' 已锁定' : ' 未锁定')
+      });
+    });
+    if (!tags.length) return;
+    rows.push({
+      code: it.code, name: it.name, exch: it.exch, tags: tags,
+      price: fmtPrice(it.price, it.digits), pct: num(it.percent, 0).toFixed(2) + '%'
+    });
+  });
+  rows.sort(function (x, y) { return parseFloat(y.pct) - parseFloat(x.pct); });
+  return rows;
+}
+
+/* 触发中的品种明细 */
+function trigRows() {
+  var byCode = {};
+  S.above.concat(S.below).forEach(function (it) { byCode[it.code] = it; });
+  var rows = [];
+  (S.alerts || []).forEach(function (al) {
+    var it = byCode[al.code] || {};
+    var up = String(al.state || '') === 'up';
+    var dg = it.digits === undefined ? (al.digits || 2) : it.digits;
+    var tags = [{ cls: up ? 'up' : 'down', text: up ? '上穿上阈' : '下穿下阈' }];
+    if (al.limit !== null && al.limit !== undefined) {
+      tags.push({ cls: '', text: '阈值 ' + fmtPrice(al.limit, dg) });
+    }
+    if (al.thrLabel && al.thrLabel !== '-') tags.push({ cls: '', text: al.thrLabel });
+    rows.push({
+      code: al.code,
+      name: it.name || al.name || al.code,
+      exch: it.exch || al.exch || '',
+      tags: tags,
+      price: fmtPrice(al.price || it.price, dg),
+      pct: (it.percent === undefined || it.percent === null
+        ? '' : num(it.percent, 0).toFixed(2) + '%')
+    });
+  });
+  return rows;
+}
+
+/* ---------------- 异常提示条 ---------------- */
+var _alertOpen = '', _alertHidden = '';
+
+function updateAlert(conn) {
+  var bar = $('#alertBar');
+  if (!bar) return;
+  var err = conn.ok ? '' : String(conn.err || S.error || '');
+  if (!err) {
+    bar.style.display = 'none';
+    _alertOpen = ''; _alertHidden = '';
+    return;
+  }
+  if (err === _alertHidden) { bar.style.display = 'none'; return; }
+  bar.style.display = '';
+  if (err !== _alertOpen) {
+    _alertOpen = err;
+    $('#alertMsg').textContent = err;
+    $('#alertCopy').style.display =
+      /pip install tqsdk/.test(err) ? '' : 'none';
+  }
+}
+
+/* 从错误文本里抠出「可直接复制」的修复命令 */
+function fixCommand() {
+  var m = /"([^"]+)"\s+-m\s+pip\s+install\s+tqsdk/.exec(_alertOpen);
+  if (!m) return '';
+  return '"' + m[1] + '" -m pip install tqsdk' +
+         ' -i https://mirrors.aliyun.com/pypi/simple/';
+}
+
+function copyText(s) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(s);
+  }
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = s;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    return Promise.resolve();
+  } catch (e) { return Promise.reject(e); }
 }
 
 /* ---------------- 设置面板回填 ---------------- */
@@ -658,6 +793,37 @@ function bind() {
     applyTheme(cur === 'dark' ? 'light' : 'dark');
   });
   $('#btnGhost').addEventListener('click', function () { setGhost(!GHOST); });
+
+  // 统计卡点击 → 品种明细
+  $('#cardArmed').addEventListener('click', function () {
+    var rows = armedRows();
+    openPicks('已锁定阈值的品种（' + rows.length + ' 个）', rows);
+  });
+  $('#cardTrig').addEventListener('click', function () {
+    var rows = trigRows();
+    openPicks('触发中的品种（' + rows.length + ' 个 · 门槛 ' +
+      num(S.minPercent, 70) + '%）', rows);
+  });
+  $('#pickClose').addEventListener('click', closePicks);
+  $('#pickMask').addEventListener('click', closePicks);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closePicks();
+  });
+
+  // 异常提示条
+  $('#alertClose').addEventListener('click', function () {
+    _alertHidden = _alertOpen;
+    $('#alertBar').style.display = 'none';
+  });
+  $('#alertCopy').addEventListener('click', function () {
+    var c = fixCommand();
+    if (!c) { toast('没有可复制的命令', 'warn'); return; }
+    copyText(c).then(function () {
+      toast('修复命令已复制，粘到命令行执行即可', 'ok');
+    }).catch(function () {
+      toast('复制失败，请手动选中文字复制', 'warn');
+    });
+  });
   $('#btnSet').addEventListener('click', function () { openSet(); });
   $('#btnCloseSet').addEventListener('click', closeSet);
   $('#mask').addEventListener('click', closeSet);

@@ -12,7 +12,10 @@ var CHARTS = null;
 var ST = {
   code: '', kind: 'timeshare', bars: [], digits: 2,
   inds: { MA: true, BOLL: false, VOL: true, MACD: true, KDJ: false, RSI: false, WR: false },
-  timer: null, name: '', tq: '', live: null
+  timer: null, name: '', tq: '', live: null,
+  sym: '',            // 空 = 加权（仓权）；否则为真实合约代码，如 SHFE.cu2611
+  symName: '',        // 当前合约显示名
+  contracts: null     // {weighted:{...}, items:[...]}
 };
 
 function $(s) { return document.querySelector(s); }
@@ -134,9 +137,74 @@ function bindInds() {
   });
 }
 
+/* ---------------- 合约选择 ---------------- */
+function loadContracts() {
+  return fetch('/api/contracts?code=' + encodeURIComponent(ST.code))
+    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      if (!r || !r.ok) { renderCtabs(null); return; }
+      ST.contracts = r;
+      renderCtabs(r);
+    })
+    .catch(function () { renderCtabs(null); });
+}
+
+function renderCtabs(r) {
+  var box = $('#ctabs');
+  box.innerHTML = '';
+  var head = document.createElement('button');
+  head.className = 'ctab w' + (ST.sym ? '' : ' on');
+  head.textContent = '加权（仓权）';
+  head.title = '按持仓量加权的品种合约（默认）';
+  head.addEventListener('click', function () { pickSym(''); });
+  box.appendChild(head);
+
+  if (!r || !r.items || !r.items.length) {
+    var s = document.createElement('span');
+    s.className = 'ct-load';
+    s.textContent = r ? '（无真实合约）' : '（合约列表加载失败）';
+    box.appendChild(s);
+    return;
+  }
+  r.items.forEach(function (it) {
+    var b = document.createElement('button');
+    b.className = 'ctab' + (ST.sym === it.sym ? ' on' : '');
+    b.innerHTML = (it.isMain ? '<span class="dot"></span>' : '') +
+      esc2(it.month || it.name) +
+      '<span class="oi">' + shortNum(it.oi) + '</span>';
+    b.title = (it.name || it.sym) + '　现价 ' + fmt(it.last, it.digits) +
+      '　持仓 ' + shortNum(it.oi) + (it.isMain ? '　（主力）' : '');
+    b.addEventListener('click', function () { pickSym(it.sym); });
+    box.appendChild(b);
+  });
+}
+
+function pickSym(sym) {
+  if (ST.sym === sym) return;
+  ST.sym = sym || '';
+  var nm = '';
+  if (ST.sym && ST.contracts) {
+    (ST.contracts.items || []).forEach(function (it) {
+      if (it.sym === ST.sym) nm = it.name || it.sym;
+    });
+  }
+  ST.symName = nm;
+  if (ST.contracts) renderCtabs(ST.contracts);
+  try {
+    var u = new URL(location.href);
+    if (ST.sym) u.searchParams.set('sym', ST.sym);
+    else u.searchParams.delete('sym');
+    history.replaceState(null, '', u.toString());
+  } catch (e) {}
+  load(true);
+}
+
+function esc2(s) { return String(s === undefined || s === null ? '' : s); }
+
 function load(first) {
   var url = '/api/kline?code=' + encodeURIComponent(ST.code) +
-            '&kind=' + encodeURIComponent(ST.kind);
+            '&kind=' + encodeURIComponent(ST.kind) +
+            (ST.sym ? '&sym=' + encodeURIComponent(ST.sym) : '');
   $('#cStatus').textContent = '加载中…';
   fetch(url).then(function (r) { return r.json(); }).then(function (r) {
     if (!r.ok) { $('#cStatus').innerHTML = '<span class="err">' + (r.message || '加载失败') + '</span>'; return; }
@@ -145,6 +213,9 @@ function load(first) {
     ST.digits = d.digits || 2;
     ST.name = d.name || '';
     ST.tq = d.tq || '';
+    ST.sym = d.sym || ST.sym || '';
+    ST.symName = (d.symName && !d.isWeighted) ? d.symName : (ST.symName || '');
+    ST.isWeighted = (d.isWeighted !== false);
     ST.kindCn = (d.kindCn || {})[ST.kind] || d.kindCn || '';
     renderHeader(d);
     draw();
@@ -157,9 +228,12 @@ function load(first) {
 function renderHeader(d) {
   var q = d.quote || {}, b = d.base || {};
   var dg = ST.digits;
-  $('#hName').textContent = (d.name || '') + ' 加权';
-  $('#hCode').textContent = (d.tq || '') + '　' + (d.exch || '');
-  document.title = (d.name || '') + ' 加权合约行情';
+  var isW = (d.isWeighted !== false);
+  var symLabel = isW ? '加权（仓权）' : (ST.symName || d.sym || '真实合约');
+  $('#hName').textContent = isW ? ((d.name || '') + ' 加权')
+                                : ((d.name || '') + ' · ' + symLabel);
+  $('#hCode').textContent = (isW ? (d.tq || '') : (d.sym || '')) + '　' + (d.exch || '');
+  document.title = (d.name || '') + (isW ? ' 加权合约行情' : ' ' + symLabel + ' 行情');
   var last = num(q.last, 0);
   ST.live = last;
   $('#hPrice').textContent = fmt(last, dg);
@@ -190,8 +264,8 @@ function renderHeader(d) {
     : (delay < 1000 ? delay + ' 毫秒'
       : (delay < 60000 ? (delay / 1000).toFixed(1) + ' 秒'
         : (delay / 60000).toFixed(1) + ' 分钟'));
-  $('#fName').textContent = d.name || '--';
-  $('#fTq').textContent = d.tq || '--';
+  $('#fName').textContent = (d.name || '--') + (isW ? '（加权）' : '（' + symLabel + '）');
+  $('#fTq').textContent = isW ? (d.tq || '--') : (d.sym || '--');
   $('#fKind').textContent = (d.kindCn || {})[ST.kind] || ST.kind;
   $('#fBars').textContent = ST.bars.length + ' 根';
 }
@@ -426,6 +500,7 @@ window.addEventListener('DOMContentLoaded', function () {
   if (t) document.documentElement.setAttribute('data-theme', t);
   var qs = new URLSearchParams(location.search);
   ST.code = qs.get('code') || 'CU';
+  ST.sym = qs.get('sym') || '';
   var k = qs.get('kind');
   KIND_CN = { timeshare: '分时', m1: '1分', m5: '5分', m15: '15分',
               m30: '30分', h1: '60分', h2: '120分', d: '日K' };
@@ -433,6 +508,9 @@ window.addEventListener('DOMContentLoaded', function () {
   bindInds();
   initTabs();
   load(true);
+  loadContracts();
   ST.timer = setInterval(function () { load(false); }, 2000);
+  // 合约列表（主力标记/持仓）每 60 秒刷新一次
+  setInterval(loadContracts, 60000);
   window.addEventListener('resize', function () { if (CHARTS) CHARTS.resize(); });
 });

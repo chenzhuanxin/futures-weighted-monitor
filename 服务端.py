@@ -64,6 +64,16 @@ sys.path.insert(0, DATA_DIR)
 
 import importlib
 
+# ---- 环境自检 / 自愈 --------------------------------------------------------- #
+# 本机可能装了多个 Python。若「当前这个」没有天勤 tqsdk（典型的「用 A 装了、
+# 用 B 启动」），这里会自动改用装了天勤的那个解释器重启自己；一个都没有就自动
+# 联网安装。这样无论双击 bat、命令行、IDE 还是快捷方式启动，都不会再出现
+# 「当前 Python 未安装天勤 tqsdk」。
+_SELF = importlib.import_module("环境自检")
+if not _SELF.ensure(server_path=os.path.abspath(__file__), argv=sys.argv[1:]):
+    sys.stderr.write(_SELF.fail_hint())
+    sys.stderr.flush()
+
 PT = importlib.import_module("品种表")
 TQ = importlib.import_module("天勤行情")
 MAIL = importlib.import_module("邮件预警")
@@ -274,6 +284,9 @@ class App:
         self.base_override: dict = {}
         self.base_meta: dict = {}
         self.load_base_override()
+        # 合约列表缓存 code -> (ts, data)
+        self._contracts: dict = {}
+        self._ct_lock = threading.RLock()
 
     # ---------------- 持久化 ---------------- #
     @staticmethod
@@ -483,6 +496,46 @@ class App:
         with self._base_lock:
             b = self.base.get(code)
             return dict(b) if b else {"H": 0, "L": 0, "M": 0}
+
+    # ---------------- 合约列表（加权 + 真实月份合约，带缓存） ---------------- #
+    def contracts(self, code: str, force: bool = False) -> dict:
+        with self._ct_lock:
+            now = time.time()
+            hit = self._contracts.get(code)
+            if hit and not force and (now - hit[0]) < 30 and hit[1].get("ok"):
+                return hit[1]
+            d = self.src.contracts(code)
+            if d.get("ok"):
+                self._contracts[code] = (now, d)
+            return d
+
+    def contract_quote(self, code: str, sym: str) -> dict:
+        """某个合约的最新报价（加权合约返回品种行情）。"""
+        cq = self.contracts(code)
+        if not cq.get("ok"):
+            return {}
+        w = cq.get("weighted") or {}
+        if not sym or sym == w.get("sym"):
+            return w
+        for it in (cq.get("items") or []):
+            if it.get("sym") == sym:
+                return it
+        return {}
+
+    @staticmethod
+    def _sym_allowed(code: str, sym: str) -> bool:
+        """校验 sym 是否属于该品种（加权合约 或 该品种的真实月份合约）。"""
+        if not sym:
+            return False
+        tq = PT.TQ.get(code) or ""
+        if sym == tq:
+            return True
+        if "@" in sym or sym.startswith("KQ"):
+            return False
+        if tq and "@" in tq:
+            tail = tq.split("@", 1)[1]           # SHFE.cu
+            return sym.lower().startswith(tail.lower())
+        return False
 
 
     # ---------------- 阈值结构 ---------------- #
@@ -1139,20 +1192,38 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/base":
                 return self._json({"ok": True, "meta": APP.base_meta,
                                    "count": len(APP.base_override)})
+            if path == "/api/contracts":
+                code = (qs.get("code") or [""])[0]
+                if code not in PT.BY_CODE:
+                    return self._json({"ok": False, "message": "未知品种"}, 404)
+                return self._json(APP.src.contracts(code))
+
             if path == "/api/kline":
                 code = (qs.get("code") or qs.get("key") or [""])[0]
                 kind = (qs.get("kind") or ["d"])[0]
                 limit = (qs.get("limit") or [None])[0]
+                sym = (qs.get("sym") or [""])[0]
                 if code not in PT.BY_CODE:
                     return self._json({"ok": False, "message": "未知品种"}, 404)
                 if kind not in KIND_ORDER:
                     return self._json({"ok": False, "message": "未知周期"}, 400)
-                d = APP.src.kline(code, kind, int(limit) if limit else None)
+                # 只允许本品种的合约（加权 或 真实月份合约），避免传入任意代码
+                if sym and not App._sym_allowed(code, sym):
+                    return self._json({"ok": False, "message": "合约不属于该品种"},
+                                      400)
+                d = APP.src.kline(code, kind, int(limit) if limit else None,
+                                  sym=(sym or None))
                 v = PT.BY_CODE[code]
-                q = APP.quotes.get(code) or {}
+                # 指定真实合约时，头部行情用该合约自己的报价
+                q = (APP.contract_quote(code, sym) if sym else {}) or \
+                    (APP.contract_quote(code, "") or {}) or {}
                 d.update({
                     "name": v["name"], "exch": v["exch"], "tq": v["tq"],
-                    "digits": q.get("digits", 2),
+                    "sym": d.get("sym") or v["tq"] or "",
+                    "isWeighted": bool(d.get("isWeighted", not sym)),
+                    "symName": q.get("name") or v["name"],
+                    "digits": q.get("digits") or
+                              (APP.quotes.get(code) or {}).get("digits", 2),
                     "base": ((lambda b: b if b.get("H") else
                               {"H": v["H"], "L": v["L"], "M": v["M"]})(
                                   APP.base_of(code))),

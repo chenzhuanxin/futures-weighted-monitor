@@ -51,11 +51,18 @@ if not defined BOOT_PY (
 echo Boot interpreter: %BOOT_PY%
 echo.
 
-"%BOOT_PY%" launch.py %*
+if exist "launch.py" (
+  "%BOOT_PY%" launch.py %*
+) else (
+  echo [ERROR] launch.py not found next to this .bat.
+  echo         Please keep all project files in the same folder and run the .bat from there.
+  pause
+  exit /b 1
+)
 
 if errorlevel 1 (
   echo.
-  echo [HINT] If launch.py reported that tqsdk is missing, install it into the
+  echo [HINT] If the panel reported that tqsdk is missing, install it into the
   echo        interpreter that actually runs the server:
   echo          "%BOOT_PY%" -m pip install tqsdk -i https://mirrors.aliyun.com/pypi/simple/
   pause
