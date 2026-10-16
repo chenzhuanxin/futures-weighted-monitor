@@ -35,6 +35,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -87,6 +88,7 @@ BASE_FILE = os.path.join(CACHE_DIR, "基准_HLM.json")
 STATIC_DIR = os.path.join(BASE_DIR, "静态")
 
 KIND_ORDER = TQ.KIND_ORDER
+APP_NAME = "weighted-monitor"          # 单实例探测用的身份标识
 THR_KINDS = TQ.THR_KINDS
 MA_CHOICES = TQ.MA_CHOICES
 OFFSET_CHOICES = TQ.OFFSET_CHOICES
@@ -112,6 +114,7 @@ DEFAULT_CONFIG = {
         "mailMaxPerDay": 60,
         "alertCandle": "m1",             # 用 1 分钟K线穿越判定
         "alertOnStart": False,           # 启动时不补发存量触发
+        "alertOnArm": True,              # 锁定/改阈值时若价格已在阈外，立即发一次提示
     },
     "mail": {
         "host": "smtp.126.com",
@@ -273,6 +276,9 @@ class App:
         self._sse: list = []            # SSE 客户端队列
         self._sse_lock = threading.Lock()
         self._cross: dict = {}          # (code, side) -> 已报过的 1分钟bar时间戳
+        self._edge: dict = {}           # (code, side) -> 上一轮是否处于「阈值外侧」
+        self._rearm: set = set()        # 刚武装/刚改过阈值的 (code, side)
+        self._fired_note: dict = {}     # (code, side) -> (发信时间戳, 触发原因)
         self._first_scan = True
         self._stop = False
         # ---- 历史基准（H/L/M）---- #
@@ -757,6 +763,16 @@ class App:
         同一根 1 分钟K线内只报一次，因此「价格长期停在阈值外」不会重复发信 —— 
         从机制上就不可能持续轰炸。
 
+        ⚠ 纯穿越判定有一个致命盲区：**若武装阈值时价格已经停在阈值外侧**，
+        则此后永远不会再发生「穿越」（没有从内侧跨到外侧这个动作），用户设了
+        阈值却永远收不到信。所以这里再叠加一层 **状态边沿判定**：
+
+            · 记录上一轮该侧是否处于「阈值外侧」（self._edge）
+            · 从内侧 → 外侧 的变化视为一次边沿，触发发信
+            · 武装/修改阈值时把该侧标进 self._rearm，下一轮若已在阈外，
+              立即发一封「武装时价格已在阈外」的即时提示（只此一次）
+            · 服务启动首轮只建基线、不补发（沿用 alertOnStart），避免重启轰炸
+
         需求 4：阈值必须处于「已锁定」状态才参与预警；解锁即静默。
         需求 6：非交易时段不预警。
         """
@@ -776,12 +792,15 @@ class App:
                 if not th.get("value"):
                     continue
                 armed = th.get("armed")
+                key = (code, side)
                 if not armed:
                     if th.get("locked"):
                         pass
                     elif th.get("mode"):
                         unlocked_hits += 1
-                    self._cross.pop((code, side), None)
+                    self._cross.pop(key, None)
+                    self._edge.pop(key, None)
+                    self._rearm.discard(key)
                     continue
                 thr = float(th["value"])
 
@@ -802,23 +821,43 @@ class App:
                     bar_ts = int(now // 60)
                     note = "实时价穿越（无1分钟K线，降级）"
 
-                crossed = False
+                # ---- 判定源 1：1 分钟K线穿越 ---- #
+                crossed, reason = False, ""
                 if side == "up" and prev_c <= thr < cur_c:
-                    crossed = True
+                    crossed, reason = True, "1分钟K线**上穿**上阈"
                 elif side == "down" and prev_c >= thr > cur_c:
+                    crossed, reason = True, "1分钟K线**下穿**下阈"
+
+                # ---- 判定源 2：状态边沿（补穿越判定的盲区）---- #
+                in_zone = (live >= thr) if side == "up" else (live <= thr)
+                prev_in = self._edge.get(key)          # None = 尚未建立基线
+
+                if in_zone and prev_in is False:
                     crossed = True
+                    if not reason:
+                        reason = "实时价由阈内**突破到阈外**"
+                elif in_zone and prev_in is None:
+                    fresh = key in self._rearm and self.panel("alertOnArm", True)
+                    if fresh or self.panel("alertOnStart", False):
+                        crossed = True
+                        if not reason:
+                            reason = ("锁定阈值时价格已在阈外（即时提示）" if fresh
+                                      else "启动时价格已在阈外（存量补发）")
+                    # 否则：服务启动首轮只建基线，不补发（避免重启轰炸）
+
+                self._edge[key] = in_zone
+                self._rearm.discard(key)
 
                 # 持续位于阈值外 → 面板展示（不重复发信）
-                if side == "up" and live >= thr:
-                    active.append(self._alert_item(it, side, thr, "crossed" if crossed else "holding"))
-                elif side == "down" and live <= thr:
-                    active.append(self._alert_item(it, side, thr, "crossed" if crossed else "holding"))
+                if in_zone:
+                    active.append(self._alert_item(
+                        it, side, thr, "crossed" if crossed else "holding"))
 
                 if not crossed:
                     continue
-                if self._cross.get((code, side)) == bar_ts:
+                if self._cross.get(key) == bar_ts:
                     continue                      # 同一根 1 分钟K线内已报过 → 跳过
-                self._cross[(code, side)] = bar_ts
+                self._cross[key] = bar_ts
 
                 # 冷却
                 k = "%s:%s" % (code, side)
@@ -828,13 +867,14 @@ class App:
                     continue
 
                 item = self._alert_item(it, side, thr, "crossed")
-                item["triggerNote"] = note
+                item["triggerNote"] = reason or note
                 item["barTime"] = time.strftime("%Y-%m-%d %H:%M",
                                                 time.localtime(bar_ts / 1000.0)) \
                     if bar_ts > 1e11 else ""
                 if self._first_scan and not self.panel("alertOnStart", False):
                     continue
                 fired.append(item)
+                self._fired_note[key] = (now, reason or note)
 
         if stale_hits:
             self.sup["closed"] += stale_hits
@@ -865,6 +905,14 @@ class App:
     def _alert_item(self, it, side, thr, phase):
         digits = int(it.get("digits", 2) or 2)
         delay = it.get("delayMs", -1)
+        # 最近 15 分钟内发过信 → 面板回显「已发信」，避免用户以为没触发
+        fn = self._fired_note.get((it["code"], side))
+        recent = bool(fn and time.time() - fn[0] < 900)
+        lab = {"crossed": "已触发·已发信",
+               "holding": "已在阈外·等回落再穿越",
+               "pending": "非交易时段·静默"}.get(phase, phase)
+        if recent:
+            lab = "已发信 %s" % time.strftime("%H:%M", time.localtime(fn[0]))
         return {
             "code": it["code"], "name": it["name"], "exch": it["exch"],
             "tq": it.get("tq", "-"), "state": side,
@@ -880,7 +928,8 @@ class App:
             "quoteTime": it.get("quoteTime") or "-",
             "delayLabel": self._delay_label(delay),
             "at": now_str(), "phase": phase,
-            "triggerNote": "1分钟K线穿越",
+            "triggerNote": (fn[1] if recent else "1分钟K线穿越"),
+            "phaseLabel": lab,
         }
 
     @staticmethod
@@ -1166,6 +1215,9 @@ class Handler(BaseHTTPRequestHandler):
                          ".woff2": "font/woff2"}.get(ext,
                                                      "application/octet-stream")
                 return self._file(rel, ctype)
+            if path == "/api/ping":
+                return self._json({"ok": True, "app": APP_NAME,
+                                   "pid": os.getpid(), "started": APP.started})
             if path == "/api/stream":
                 return self._sse()
             if path == "/api/data":
@@ -1327,6 +1379,14 @@ class Handler(BaseHTTPRequestHandler):
                         s["locked"] = bool(body["locked"])
                 if all(not (t[x] or {}).get("mode") for x in ("up", "down")):
                     APP.thresholds.pop(code, None)      # 两侧全空则删掉条目
+                # 阈值被改动 → 该侧重新武装：清掉边沿基线，下一轮若价格已在
+                # 阈外则立即发一封即时提示（解决「设了阈值却收不到信」的盲区）
+                if (t.get(side) or {}).get("mode"):
+                    APP._rearm.add((code, side))
+                else:
+                    APP._rearm.discard((code, side))
+                APP._edge.pop((code, side), None)
+                APP._cross.pop((code, side), None)
                 APP.save_thresholds()
                 APP.refresh()
                 return self._json({"ok": True, "threshold": APP.thr(code),
@@ -1371,16 +1431,66 @@ def pick_port(start: int, tries: int = 30) -> int:
     return start
 
 
+def find_running(start: int, tries: int = 40) -> tuple:
+    """探测本机是否已有本面板实例在跑，返回 (port, info) / (None, None)。
+
+    只认 ``/api/ping`` 返回 app == APP_NAME 的端口，避免误判别的程序；
+    并排除自己的父进程（环境自检用 subprocess 重启时父进程仍在监听）。
+    """
+    try:
+        ppid = os.getppid()
+    except Exception:                                      # noqa: BLE001
+        ppid = -1
+    for p in range(start, start + tries):
+        if not port_in_use(p):
+            continue
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/api/ping" % p,
+                headers={"User-Agent": APP_NAME})
+            with urllib.request.urlopen(req, timeout=1.2) as fh:
+                info = json.loads(fh.read().decode("utf-8"))
+        except Exception:                                   # noqa: BLE001
+            continue
+        if info.get("app") != APP_NAME:
+            continue
+        if int(info.get("pid") or -1) == ppid:
+            continue                                        # 父进程（重启来源）
+        return p, info
+    return None, None
+
+
 def main() -> int:
     global APP                                             # noqa: PLW0603
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8962)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="忽略单实例检测，强制再起一个（仅调试用）")
     args = ap.parse_args()
 
     print("=" * 70)
     print(" 加权（仓权）合约监控面板 · 天勤 TqSdk 版")
     print("=" * 70)
+
+    # ---- 单实例保护：已有实例则直接复用，不再起第二个 ---- #
+    # 多个实例会各跑一份 tqsdk 订阅、共享同一份阈值文件互相覆盖，
+    # 导致「在这个页面设了阈值、在另一个页面看不到/不预警」。
+    if not args.force:
+        ex_port, ex_info = find_running(args.port)
+        if ex_port:
+            ex_url = "http://127.0.0.1:%d/" % ex_port
+            print(" 检测到面板已在运行：%s" % ex_url)
+            print("   PID %s　启动于 %s" % (ex_info.get("pid"),
+                                            ex_info.get("started")))
+            print(" 不再重复启动第二个实例（避免行情重复订阅与配置互相覆盖）。")
+            print(" 已为你打开已有面板；若要重启请先关闭原窗口/Ctrl+C 退出。")
+            if not args.no_browser:
+                try:
+                    webbrowser.open(ex_url)
+                except Exception:                           # noqa: BLE001
+                    pass
+            return 0
 
     APP = App()
     port = pick_port(args.port)

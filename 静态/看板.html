@@ -130,6 +130,9 @@ try {
       <div class="row"><label>非交易时段静默</label>
         <label class="switch"><input type="checkbox" id="cfgTradingOnly"><i></i><span>闭市 / 周末 / 节假不发信</span></label>
       </div>
+      <div class="row"><label>建阈即时提示</label>
+        <label class="switch"><input type="checkbox" id="cfgOnArm"><i></i><span>锁定阈值时若价格已在阈外，立即发一封</span></label>
+      </div>
       <div class="row"><label>SMTP 服务器</label><input type="text" id="cfgHost" placeholder="smtp.126.com"></div>
       <div class="row"><label>端口</label><input type="number" id="cfgPort" placeholder="465">
         <label class="switch"><input type="checkbox" id="cfgSsl"><i></i><span>SSL</span></label>

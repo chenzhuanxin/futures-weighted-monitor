@@ -722,6 +722,13 @@ function trigRows() {
       tags.push({ cls: '', text: '阈值 ' + fmtPrice(al.limit, dg) });
     }
     if (al.thrLabel && al.thrLabel !== '-') tags.push({ cls: '', text: al.thrLabel });
+    // 发信状态：说明这一条到底有没有发过邮件、为什么
+    if (al.phaseLabel) {
+      tags.push({
+        cls: (al.phase === 'holding' ? '' : (up ? 'up' : 'down')),
+        text: al.phaseLabel
+      });
+    }
     // 已锁定的阈值都可以在弹窗里直接解锁，解锁即停止后续预警
     var acts = [];
     ['up', 'down'].forEach(function (sd) {
@@ -802,6 +809,7 @@ function fillSettings() {
   $('#cfgTqPass').value = t.password || '';
   $('#cfgMailOn').checked = !!p.mailOn;
   $('#cfgTradingOnly').checked = p.mailTradingOnly !== false;
+  $('#cfgOnArm').checked = p.alertOnArm !== false;
   $('#cfgHost').value = m.host || '';
   $('#cfgPort').value = m.port || 465;
   $('#cfgSsl').checked = m.ssl !== false;
@@ -855,6 +863,7 @@ function cfgPayload() {
       thrOffsetDir: $('#cfgThrDir').value,
       mailOn: $('#cfgMailOn').checked,
       mailTradingOnly: $('#cfgTradingOnly').checked,
+      alertOnArm: $('#cfgOnArm').checked,
       mailCooldown: parseInt($('#cfgCooldown').value, 10) || 300,
       mailMaxPerHour: parseInt($('#cfgPerHour').value, 10) || 12,
       mailMaxPerDay: parseInt($('#cfgPerDay').value, 10) || 60
