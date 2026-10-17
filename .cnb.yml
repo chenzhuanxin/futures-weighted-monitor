@@ -1,0 +1,24 @@
+# CNB 云原生构建流水线
+#
+# 作用：每次 push 到 main 分支，自动把 docs/ 目录部署到腾讯云 EdgeOne Pages，
+#       生成可公开访问的项目主页。
+#
+# 首次启用需要准备（一次性）：
+#   1. 在 CNB 仓库设置里开启「云原生构建」
+#   2. 到 https://console.cloud.tencent.com/edgeone/pages 创建 Pages 项目
+#      （项目名建议用 futures-weighted-monitor），并生成 API Token
+#   3. 在 CNB 新建一个「密钥仓库」，添加 yml 文件，内容形如：
+#          EDGEONE_API_TOKEN: 你的API Token
+#   4. 把下面 imports 里的 URL 换成你那个密钥仓库文件的 blob 地址
+#
+# 令牌只存在密钥仓库里，不会出现在代码或日志中。
+
+main:
+  push:
+    # 引入密钥仓库里的环境变量（EDGEONE_API_TOKEN）
+    - imports:
+        - https://cnb.cool/gongqizi0/envs/-/blob/main/pages.yml
+      stages:
+        - name: 部署文档到 EdgeOne Pages
+          image: node:20
+          script: npx edgeone pages deploy ./docs -n futures-weighted-monitor -t $EDGEONE_API_TOKEN
