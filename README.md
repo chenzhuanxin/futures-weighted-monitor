@@ -12,6 +12,12 @@
 
 ---
 
+- **仓库**：<https://cnb.cool/gongqizi0/futures-weighted-monitor>
+- **下载 exe**：<https://cnb.cool/gongqizi0/futures-weighted-monitor/-/releases/download/v1.0.0/加权合约监控面板.exe>
+- **所有版本**：<https://cnb.cool/gongqizi0/futures-weighted-monitor/-/releases>
+
+---
+
 ## 快速开始
 
 ### 方式 A：单文件 exe（推荐 · 免安装）
