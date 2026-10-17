@@ -809,7 +809,6 @@ function fillSettings() {
   $('#cfgTqPass').value = t.password || '';
   $('#cfgMailOn').checked = !!p.mailOn;
   $('#cfgTradingOnly').checked = p.mailTradingOnly !== false;
-  $('#cfgOnArm').checked = p.alertOnArm !== false;
   $('#cfgHost').value = m.host || '';
   $('#cfgPort').value = m.port || 465;
   $('#cfgSsl').checked = m.ssl !== false;
@@ -863,7 +862,6 @@ function cfgPayload() {
       thrOffsetDir: $('#cfgThrDir').value,
       mailOn: $('#cfgMailOn').checked,
       mailTradingOnly: $('#cfgTradingOnly').checked,
-      alertOnArm: $('#cfgOnArm').checked,
       mailCooldown: parseInt($('#cfgCooldown').value, 10) || 300,
       mailMaxPerHour: parseInt($('#cfgPerHour').value, 10) || 12,
       mailMaxPerDay: parseInt($('#cfgPerDay').value, 10) || 60

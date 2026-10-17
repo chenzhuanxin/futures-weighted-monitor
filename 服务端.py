@@ -114,7 +114,6 @@ DEFAULT_CONFIG = {
         "mailMaxPerDay": 60,
         "alertCandle": "m1",             # 用 1 分钟K线穿越判定
         "alertOnStart": False,           # 启动时不补发存量触发
-        "alertOnArm": True,              # 锁定/改阈值时若价格已在阈外，立即发一次提示
     },
     "mail": {
         "host": "smtp.126.com",
@@ -276,8 +275,6 @@ class App:
         self._sse: list = []            # SSE 客户端队列
         self._sse_lock = threading.Lock()
         self._cross: dict = {}          # (code, side) -> 已报过的 1分钟bar时间戳
-        self._edge: dict = {}           # (code, side) -> 上一轮是否处于「阈值外侧」
-        self._rearm: set = set()        # 刚武装/刚改过阈值的 (code, side)
         self._fired_note: dict = {}     # (code, side) -> (发信时间戳, 触发原因)
         self._first_scan = True
         self._stop = False
@@ -763,15 +760,11 @@ class App:
         同一根 1 分钟K线内只报一次，因此「价格长期停在阈值外」不会重复发信 —— 
         从机制上就不可能持续轰炸。
 
-        ⚠ 纯穿越判定有一个致命盲区：**若武装阈值时价格已经停在阈值外侧**，
-        则此后永远不会再发生「穿越」（没有从内侧跨到外侧这个动作），用户设了
-        阈值却永远收不到信。所以这里再叠加一层 **状态边沿判定**：
-
-            · 记录上一轮该侧是否处于「阈值外侧」（self._edge）
-            · 从内侧 → 外侧 的变化视为一次边沿，触发发信
-            · 武装/修改阈值时把该侧标进 self._rearm，下一轮若已在阈外，
-              立即发一封「武装时价格已在阈外」的即时提示（只此一次）
-            · 服务启动首轮只建基线、不补发（沿用 alertOnStart），避免重启轰炸
+        ⚠ 注意这条语义：纯穿越判定要求必须发生「由内侧跨到外侧」的动作。
+        若锁定阈值时价格**已经**停在阈值外侧，则只有当价格先回落到阈值
+        内侧、之后再突破出去时才会触发。面板「触发中」弹窗与邮件的
+        「突破来源」会明确标出每一条当前是「已发信」还是「已在阈外·
+        等待穿越」，方便一眼看清状态。
 
         需求 4：阈值必须处于「已锁定」状态才参与预警；解锁即静默。
         需求 6：非交易时段不预警。
@@ -799,8 +792,6 @@ class App:
                     elif th.get("mode"):
                         unlocked_hits += 1
                     self._cross.pop(key, None)
-                    self._edge.pop(key, None)
-                    self._rearm.discard(key)
                     continue
                 thr = float(th["value"])
 
@@ -821,34 +812,15 @@ class App:
                     bar_ts = int(now // 60)
                     note = "实时价穿越（无1分钟K线，降级）"
 
-                # ---- 判定源 1：1 分钟K线穿越 ---- #
+                # ---- 唯一判定源：1 分钟K线穿越 ---- #
                 crossed, reason = False, ""
                 if side == "up" and prev_c <= thr < cur_c:
                     crossed, reason = True, "1分钟K线**上穿**上阈"
                 elif side == "down" and prev_c >= thr > cur_c:
                     crossed, reason = True, "1分钟K线**下穿**下阈"
 
-                # ---- 判定源 2：状态边沿（补穿越判定的盲区）---- #
+                # 持续位于阈值外 → 面板展示「已在阈外·等待穿越」（不重复发信）
                 in_zone = (live >= thr) if side == "up" else (live <= thr)
-                prev_in = self._edge.get(key)          # None = 尚未建立基线
-
-                if in_zone and prev_in is False:
-                    crossed = True
-                    if not reason:
-                        reason = "实时价由阈内**突破到阈外**"
-                elif in_zone and prev_in is None:
-                    fresh = key in self._rearm and self.panel("alertOnArm", True)
-                    if fresh or self.panel("alertOnStart", False):
-                        crossed = True
-                        if not reason:
-                            reason = ("锁定阈值时价格已在阈外（即时提示）" if fresh
-                                      else "启动时价格已在阈外（存量补发）")
-                    # 否则：服务启动首轮只建基线，不补发（避免重启轰炸）
-
-                self._edge[key] = in_zone
-                self._rearm.discard(key)
-
-                # 持续位于阈值外 → 面板展示（不重复发信）
                 if in_zone:
                     active.append(self._alert_item(
                         it, side, thr, "crossed" if crossed else "holding"))
@@ -909,7 +881,7 @@ class App:
         fn = self._fired_note.get((it["code"], side))
         recent = bool(fn and time.time() - fn[0] < 900)
         lab = {"crossed": "已触发·已发信",
-               "holding": "已在阈外·等回落再穿越",
+               "holding": "已在阈外·待回落穿越",
                "pending": "非交易时段·静默"}.get(phase, phase)
         if recent:
             lab = "已发信 %s" % time.strftime("%H:%M", time.localtime(fn[0]))
@@ -1379,13 +1351,7 @@ class Handler(BaseHTTPRequestHandler):
                         s["locked"] = bool(body["locked"])
                 if all(not (t[x] or {}).get("mode") for x in ("up", "down")):
                     APP.thresholds.pop(code, None)      # 两侧全空则删掉条目
-                # 阈值被改动 → 该侧重新武装：清掉边沿基线，下一轮若价格已在
-                # 阈外则立即发一封即时提示（解决「设了阈值却收不到信」的盲区）
-                if (t.get(side) or {}).get("mode"):
-                    APP._rearm.add((code, side))
-                else:
-                    APP._rearm.discard((code, side))
-                APP._edge.pop((code, side), None)
+                # 阈值被改动 → 清掉该侧的「同一根K线已报」标记，新阈值立即生效
                 APP._cross.pop((code, side), None)
                 APP.save_thresholds()
                 APP.refresh()
