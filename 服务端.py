@@ -166,6 +166,20 @@ def dynamic_ma(bars: list, n: int, live: float | None) -> float | None:
     return round(sum(vals) / len(vals), 6)
 
 
+def static_ma(bars: list, n: int) -> float | None:
+    """普通均线：直接取最近 n 根 K 线收盘价的算术平均。
+
+    天勤返回的最后一根 K 线本身就在实时跳动，所以不需要再拿实时价替换 ——
+    这正是「阈值基准取自**另一个合约**的均线」时需要的口径（不能用本品种
+    加权的实时价去替换别人的最后一根 bar）。
+    """
+    cs = [b["c"] for b in bars if b.get("c", 0) > 0]
+    if not cs or n <= 0:
+        return None
+    tail = cs[-n:]
+    return round(sum(tail) / len(tail), 6)
+
+
 def quote_ts(q: dict):
     """从行情快照取「最新数据时刻」（秒级时间戳）。天勤返回 'YYYY-MM-DD HH:MM:SS.ffffff'。"""
     t = q.get("ts")
@@ -290,6 +304,7 @@ class App:
         # 合约列表缓存 code -> (ts, data)
         self._contracts: dict = {}
         self._ct_lock = threading.RLock()
+        self._sym_names: dict = {}      # sym -> 天勤官方合约名（纯碱2701）
 
     # ---------------- 持久化 ---------------- #
     @staticmethod
@@ -510,6 +525,9 @@ class App:
             d = self.src.contracts(code)
             if d.get("ok"):
                 self._contracts[code] = (now, d)
+                for it in d.get("items") or []:
+                    if it.get("sym") and it.get("name"):
+                        self._sym_names[it["sym"]] = it["name"]
             return d
 
     def contract_quote(self, code: str, sym: str) -> dict:
@@ -545,7 +563,8 @@ class App:
     @staticmethod
     def _blank_side():
         return {"mode": None, "kind": None, "ma": None, "offPct": None,
-                "offDir": None, "manual": None, "locked": False, "value": None}
+                "offDir": None, "manual": None, "sym": None, "locked": False,
+                "value": None}
 
     def thr(self, code: str, create: bool = False) -> dict:
         """取得某品种的阈值结构。
@@ -585,8 +604,17 @@ class App:
         kind, n = s.get("kind"), s.get("ma")
         if kind not in THR_KINDS or int(n or 0) not in MA_CHOICES:
             return None, "-", "-"
-        bars = self.bars(code, kind, limit=max(120, int(n) + 12))
-        base = dynamic_ma(bars, int(n), live)
+        # ---- 判定数据来源：加权合约 or 指定的真实合约 ---- #
+        sym = (s.get("sym") or "").strip()
+        if sym and sym != PT.TQ.get(code):
+            bars = self.bars_sym(sym, kind, limit=max(120, int(n) + 12))
+            # 阈值基准是别的合约的均线 → 不能用本品种加权实时价替换最后一根
+            base = static_ma(bars, int(n))
+            who = self._sym_display(sym, code)
+        else:
+            bars = self.bars(code, kind, limit=max(120, int(n) + 12))
+            base = dynamic_ma(bars, int(n), live)
+            who = None
         if base is None:
             return None, "-", "-"
         off_pct = float(s.get("offPct") or 0.0)
@@ -594,7 +622,8 @@ class App:
         cval = live if (live and live > 0) else base
         off = cval * off_pct / 100.0            # 偏移「C值（现价）」的百分比
         val = base + off if off_dir == "up" else base - off
-        label = "%s MA%d" % (TQ.KIND_CN.get(kind, kind), int(n))
+        label = ("%s %s MA%d" % (who, TQ.KIND_CN.get(kind, kind), int(n))) if who \
+            else ("%s MA%d" % (TQ.KIND_CN.get(kind, kind), int(n)))
         off_label = ("无偏移" if off_pct <= 0
                      else "%s偏移 %.1f%%" % ("上" if off_dir == "up" else "下", off_pct))
         return _r(val, 6), label, off_label
@@ -625,6 +654,61 @@ class App:
             with self._bl_lock:
                 self._bars[ck] = (now, b)
         return b[-int(limit):] if (limit and b) else b
+
+    def bars_sym(self, sym: str, kind: str, limit: int | None = None) -> list:
+        """按**具体合约代码**取 K 线（可能是加权 KQ.i@，也可能是真实月份合约）。
+
+        与 ``bars()`` 的区别：``bars()`` 以品种 code 为键，这里以合约代码为键，
+        用于「阈值取自某个真实合约的均线」这类需求。
+        """
+        ck = ("sym", sym, kind)
+        now = time.time()
+        ttl = {"m1": 2, "m5": 3, "m15": 3, "m30": 3, "h1": 3, "h2": 3,
+               "d": 60, "timeshare": 2}.get(kind, 3)
+        with self._bl_lock:
+            hit = self._bars.get(ck)
+            if hit and now - hit[0] < ttl:
+                b = hit[1]
+                return b[-int(limit):] if limit else b
+        code = self._code_of_sym(sym)
+        try:
+            b = self.src.kline(code or "", kind, SRC_LEN.get(kind, 500),
+                               sym=sym).get("bars") or []
+        except Exception:                                       # noqa: BLE001
+            b = []
+        if b:
+            with self._bl_lock:
+                self._bars[ck] = (now, b)
+        return b[-int(limit):] if (limit and b) else b
+
+    @staticmethod
+    def _code_of_sym(sym: str) -> str | None:
+        """由合约代码反查品种 code（SHFE.cu2612 → CU）。"""
+        if not sym or "." not in sym:
+            for c, s in PT.TQ.items():
+                if s == sym:
+                    return c
+            return None
+        ins = sym.split(".", 1)[1]                       # cu2612
+        letters = "".join(ch for ch in ins if ch.isalpha()).upper()
+        for c, tqs in PT.TQ.items():
+            tail = tqs.split("@", 1)[-1].split(".", 1)[-1] if "@" in tqs else ""
+            tail = "".join(ch for ch in tail if ch.isalpha()).upper()
+            if tail and tail == letters:
+                return c
+        return None
+
+    @staticmethod
+    def _sym_label(sym: str, code: str) -> str:
+        """合约显示名：SHFE.cu2612 → 沪铜2612。"""
+        ins = sym.split(".", 1)[1] if "." in sym else sym
+        digits = "".join(ch for ch in ins if ch.isdigit())
+        return (PT.NAME.get(code, "") or ins) + (digits or ins)
+
+    def _sym_display(self, sym: str, code: str) -> str:
+        """优先用天勤官方合约名（纯碱2701），退回本地解析。"""
+        nm = self._sym_names.get(sym)
+        return nm or self._sym_label(sym, code)
 
     def _prefetch(self, jobs: dict):
         """jobs = {kind: codes} —— 批量预取，一次订阅填满缓存。"""
@@ -728,12 +812,20 @@ class App:
         """为所有已配置阈值的品种计算当前阈值（动态均线 + 偏移）。"""
         # 先把需要的高周期 K 线批量取回
         jobs: dict = {}
+        warm = []
         for code, it in self.items.items():
             t = self.thresholds.get(code) or {}
             for side in ("up", "down"):
                 s = t.get(side) or {}
                 if s.get("mode") == "ma" and s.get("kind"):
                     jobs.setdefault(s["kind"], []).append(code)
+                if s.get("sym") and code not in warm:
+                    warm.append(code)       # 有「真实合约均线」阈值 → 先取合约名
+        for code in warm:
+            try:
+                self.contracts(code)        # 有 30s 缓存，开销可忽略
+            except Exception:               # noqa: BLE001
+                pass
         self._prefetch(jobs)
 
         for code, it in self.items.items():
@@ -743,6 +835,7 @@ class App:
                 val, label, off_label = self.thr_value(code, side, live)
                 it[side] = {
                     "mode": s.get("mode"), "kind": s.get("kind"),
+                    "sym": s.get("sym"),
                     "ma": s.get("ma"), "offPct": s.get("offPct"),
                     "offDir": s.get("offDir"), "manual": s.get("manual"),
                     "locked": bool(s.get("locked")),
@@ -1340,7 +1433,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif act == "lock":
                     s["locked"] = bool(body.get("locked"))
                 else:
-                    for k in ("mode", "kind", "ma", "offPct", "offDir", "manual"):
+                    for k in ("mode", "kind", "ma", "offPct", "offDir", "manual",
+                              "sym"):
                         if k in body:
                             s[k] = body[k]
                     if s.get("mode") == "ma" and s.get("ma") is not None:

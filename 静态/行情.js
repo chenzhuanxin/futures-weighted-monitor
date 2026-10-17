@@ -287,11 +287,52 @@ function load(first) {
     if (selEl && selEl.value !== ST.sym && selEl.options.length > 1) selEl.value = ST.sym;
     ST.kindCn = (d.kindCn || {})[ST.kind] || d.kindCn || '';
     renderHeader(d);
+    renderMaBar();
     draw();
     $('#cStatus').textContent = '已更新 ' + new Date().toLocaleTimeString('zh-CN');
   }).catch(function () {
     $('#cStatus').innerHTML = '<span class="err">网络错误</span>';
   });
+}
+
+/* ---------------- MA 数值条（K 线图上方） ----------------
+   显示当前合约、当前周期的 MA5 / MA10 / MA20 / MA30 / MA60 实时值，
+   并与最新价比对着色：价在均线之上为红，之下为绿。
+   ---------------------------------------------------------- */
+var MA_SHOW = [5, 10, 20, 30, 60];
+
+function renderMaBar() {
+  var box = $('#maBar');
+  if (!box) return;
+  var bars = ST.bars || [];
+  var last = bars.length ? num(bars[bars.length - 1].c, 0) : 0;
+  var html = '';
+  var any = false;
+  MA_SHOW.forEach(function (n) {
+    var line = SMA(bars.map(function (b) { return num(b.c, 0); }), n);
+    var v = line.length ? line[line.length - 1] : null;
+    if (v === null || v === undefined || isNaN(v)) {
+      html += '<span class="mv"><span class="k">MA' + n + '</span>' +
+        '<span class="v">--</span></span>';
+      return;
+    }
+    any = true;
+    var diff = last - v;
+    var cls = diff > 0 ? 'up' : (diff < 0 ? 'dn' : '');
+    var pct = last ? (diff / last * 100) : 0;
+    html += '<span class="mv ' + cls + '" title="' +
+      esc2('MA' + n + ' = ' + fmt(v, ST.digits) + '，最新价 ' + fmt(last, ST.digits) +
+        '，价' + (diff >= 0 ? '高于' : '低于') + '均线 ' + Math.abs(pct).toFixed(2) + '%') +
+      '"><span class="k">MA' + n + '</span>' +
+      '<span class="v">' + fmt(v, ST.digits) + '</span>' +
+      '<span class="d">' + (diff >= 0 ? '+' : '-') + Math.abs(pct).toFixed(2) + '%</span></span>';
+  });
+  var scope = ST.isWeighted ? '加权（仓权）' : (ST.symName || ST.sym || '真实合约');
+  html += '<span class="msp"></span>' +
+    '<span class="mtip"><b>' + esc2(scope) + '</b> · <b>' +
+    esc2(KIND_CN[ST.kind] || ST.kind) + '</b> 均线（共 ' + bars.length + ' 根K线）</span>';
+  box.innerHTML = html;
+  box.style.display = any || bars.length ? '' : 'none';
 }
 
 function renderHeader(d) {

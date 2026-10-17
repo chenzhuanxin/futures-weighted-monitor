@@ -42,9 +42,9 @@ KIND_CN = {
 # 图表页签顺序（需求 3）
 KIND_ORDER = ["timeshare", "m1", "m5", "m15", "m30", "h1", "h2", "d"]
 # 可一键设阈的周期（需求 4）
-THR_KINDS = ["m5", "m15", "m30", "h1", "h2", "d"]
+THR_KINDS = ["m1", "m5", "m15", "m30", "h1", "h2", "d"]
 # 可选的均线周期（需求 4）
-MA_CHOICES = [5, 10, 20, 30, 50, 80]
+MA_CHOICES = [5, 10, 20, 30, 50, 60, 80]
 # 偏移量选项（需求 4）
 OFFSET_CHOICES = [0.1, 0.2, 0.3, 0.5, 0.8, 1.0]
 
@@ -483,6 +483,8 @@ class TianqinSource:
             s = q.get("symbol") or ""
             if not s or q.get("expired"):
                 continue
+            if not (q.get("last") or 0) > 0:
+                continue          # 无行情（已摘牌 / 交割结束）的合约不展示，避免误选
             items.append({
                 "sym": s,
                 "month": _month_of(s),

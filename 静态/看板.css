@@ -499,6 +499,14 @@ a { color: var(--brand); }
   flex-wrap: wrap;
 }
 
+/* 阈值基准「标的」下拉：合约名 + 现价较长，给足宽度但留住换行余量 */
+.thr-open .k-sym {
+  max-width: 178px;
+  flex: 1 1 150px;
+  text-overflow: ellipsis;
+}
+.thr-open .k-sym option { font-family: var(--mono); }
+
 /* 阈别切换：下阈 / 上阈（两者可同时配置） */
 .tseg {
   display: inline-flex;

@@ -118,6 +118,122 @@ function offOptions(sel) {
   }).join('');
 }
 
+/* ---------------- 阈值基准合约下拉（加权 + 全部真实月份合约） ----------------
+   86 个品种全部预取会很重，这里用后台小并发队列渐进加载：先到先 excerpts，
+   用户点开任意卡片的「标的」下拉时基本已就绪；未就绪则立即插队。
+   ---------------------------------------------------------------------------- */
+var CT_CACHE = {};      // code -> api 结果（含 null 失败），仅「已加载」才有键
+var CT_QUEUED = {};     // code -> 1，仅表示已排队避免重复
+var CT_QUEUE = [];      // 待加载的 code
+var CT_TIMER = null;
+var CT_BUSY = 0;
+
+function ctHas(code) {
+  return Object.prototype.hasOwnProperty.call(CT_CACHE, code);
+}
+
+function loadCt(code, cb) {
+  if (ctHas(code)) {
+    cb(CT_CACHE[code]);
+    return;
+  }
+  fetch('/api/contracts?code=' + encodeURIComponent(code))
+    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      CT_CACHE[code] = (r && r.ok) ? r : null;
+      cb(CT_CACHE[code]);
+    })
+    .catch(function () { CT_CACHE[code] = null; cb(null); });
+}
+
+function ctQueue(code) {
+  if (ctHas(code) || CT_QUEUED[code]) return;
+  CT_QUEUED[code] = 1;
+  CT_QUEUE.push(code);
+  if (!CT_TIMER) CT_TIMER = setInterval(ctPump, 260);
+}
+
+function ctPump() {
+  while (CT_BUSY < 3 && CT_QUEUE.length) {
+    (function (code) {              // IIFE 捕获：var 无块级作用域，直接闭包会全指向最后一个
+      CT_BUSY++;
+      loadCt(code, function () {
+        CT_BUSY--;
+        ctApply(code);
+      });
+    })(CT_QUEUE.shift());
+  }
+  if (!CT_QUEUE.length && CT_BUSY === 0 && CT_TIMER) {
+    clearInterval(CT_TIMER);
+    CT_TIMER = null;
+  }
+}
+
+/* 把已加载的合约列表写进该品种所有卡片的「标的」下拉 */
+function ctApply(code) {
+  var r = CT_CACHE[code];
+  var sels = document.querySelectorAll('.k-sym');
+  Array.prototype.forEach.call(sels, function (sel) {
+    if (sel.dataset.code !== code) return;
+    var dig = parseInt(sel.dataset.digits || '2', 10);
+    ctFill(sel, r, dig);
+  });
+}
+
+function ctFill(sel, r, digits) {
+  var keep = sel.value;
+  if (!r || !r.items || !r.items.length) {
+    sel.innerHTML = '<option value="">标的·加权（仓权）</option>' +
+      '<option value="" disabled>（无真实合约）</option>';
+    sel.dataset.ready = '1';
+    return;
+  }
+  var html = '<option value="">标的·加权（仓权）</option>';
+  r.items.forEach(function (it) {
+    var px = fmtPrice(it.last, digits);
+    var pc = (it.pct === null || it.pct === undefined) ? '' :
+      (' ' + (num(it.pct, 0) >= 0 ? '↑' : '↓') + Math.abs(num(it.pct, 2)).toFixed(2) + '%');
+    html += '<option value="' + esc(it.sym) + '">' +
+      esc((it.name || it.month || it.sym) + '　' + px + pc) +
+      (it.isMain ? '（主力）' : '') + '</option>';
+  });
+  sel.innerHTML = html;
+  if (keep) {
+    sel.value = keep;
+    if (sel.value !== keep) sel.value = '';
+  }
+  // 配置项里指定了合约，但列表刚加载完 → 这时才能回填选中
+  if (sel.dataset.want && document.activeElement !== sel) {
+    sel.value = sel.dataset.want;
+    if (sel.value !== sel.dataset.want) sel.value = '';
+    delete sel.dataset.want;
+  }
+  sel.dataset.ready = '1';
+  sel.title = (r && r.items && r.items.length)
+    ? ('阈值基准标的：已加载 ' + r.items.length + ' 个真实合约（含价格与涨跌）')
+    : '阈值基准标的：加权（仓权）';
+}
+
+/* 绑定某张卡片的「标的」下拉 */
+function bindSymSelect(sel, code, name, digits) {
+  sel.dataset.code = code;
+  sel.dataset.digits = digits;
+  if (ctHas(code)) ctFill(sel, CT_CACHE[code], digits);
+  else ctQueue(code);
+  function ensure() {
+    if (sel.dataset.ready === '1') return;
+    loadCt(code, function (r) { ctFill(sel, r, digits); });
+  }
+  sel.addEventListener('mouseover', ensure);
+  sel.addEventListener('mousedown', ensure);
+  sel.addEventListener('focus', ensure);
+  sel.addEventListener('change', function () {
+    var opt = sel.options[sel.selectedIndex];
+    sel.title = opt ? opt.textContent.trim() : '';
+  });
+}
+
+/* ---------------- 卡片 ---------------- */
 function makeCard(it, side) {
   var cls = side === 'above' ? 'a' : 'b';
   var el = document.createElement('div');
@@ -157,6 +273,9 @@ function makeCard(it, side) {
         '<button class="tsb" data-s="down" type="button">下阈</button>' +
         '<button class="tsb" data-s="up" type="button">上阈</button>' +
       '</span>' +
+      '<select class="sel k-sym" title="阈值基准标的：默认加权（仓权）；也可选任一真实月份合约，取其指定周期的均线">' +
+        '<option value="">标的·加权（仓权）</option>' +
+      '</select>' +
       '<select class="sel k-kind"></select>' +
       '<select class="sel k-ma"></select>' +
       '<select class="sel k-off"></select>' +
@@ -193,6 +312,7 @@ function makeCard(it, side) {
   $('.k-ma', el).innerHTML = maOptions(S.thrMA);
   $('.k-off', el).innerHTML = offOptions(S.thrOffset);
   $('.k-dir', el).value = S.thrOffsetDir || 'down';
+  bindSymSelect($('.k-sym', el), it.code, it.name, it.digits);
 
   function curSide() { return el.dataset.tside; }
 
@@ -219,16 +339,23 @@ function makeCard(it, side) {
       return;
     }
     var target = curSide();
+    var selSym = $('.k-sym', el);
+    var symV = selSym ? (selSym.value || '') : '';
     post('/api/threshold', {
       code: it.code, side: target, action: 'set',
       mode: 'ma',
+      sym: symV,
       kind: $('.k-kind', el).value,
       ma: parseInt($('.k-ma', el).value, 10),
       offPct: num($('.k-off', el).value, 0),
       offDir: $('.k-dir', el).value
     }).then(function (r) {
       if (r.ok) {
-        toast(it.name + ' 已按均线填充' + (target === 'down' ? '下阈' : '上阈'), 'ok');
+        var src = symV && selSym && selSym.options[selSym.selectedIndex]
+          ? selSym.options[selSym.selectedIndex].textContent.trim()
+          : '加权（仓权）';
+        toast(it.name + ' 已按「' + src + '」均线填充' +
+          (target === 'down' ? '下阈' : '上阈'), 'ok');
       } else {
         toast((r.message || '设置失败'), 'bad');
       }
@@ -393,6 +520,19 @@ function patchCard(c, it) {
   if (document.activeElement !== $('.k-kind', el)) {
     if (t.kind) $('.k-kind', el).value = t.kind;
   }
+  // 「标的」下拉：合约列表可能还没加载完 → 记住目标值，加载完后回填
+  (function () {
+    var sel = $('.k-sym', el);
+    if (!sel) return;
+    if (document.activeElement !== sel) {
+      if (sel.dataset.ready === '1') {
+        sel.value = t.sym || '';
+        if (sel.value !== (t.sym || '')) sel.value = '';
+      } else {
+        sel.dataset.want = t.sym || '';
+      }
+    }
+  })();
   if (document.activeElement !== $('.k-ma', el)) {
     if (t.ma) $('.k-ma', el).value = String(t.ma);
   }
