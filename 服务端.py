@@ -604,17 +604,10 @@ class App:
         kind, n = s.get("kind"), s.get("ma")
         if kind not in THR_KINDS or int(n or 0) not in MA_CHOICES:
             return None, "-", "-"
-        # ---- 判定数据来源：加权合约 or 指定的真实合约 ---- #
-        sym = (s.get("sym") or "").strip()
-        if sym and sym != PT.TQ.get(code):
-            bars = self.bars_sym(sym, kind, limit=max(120, int(n) + 12))
-            # 阈值基准是别的合约的均线 → 不能用本品种加权实时价替换最后一根
-            base = static_ma(bars, int(n))
-            who = self._sym_display(sym, code)
-        else:
-            bars = self.bars(code, kind, limit=max(120, int(n) + 12))
-            base = dynamic_ma(bars, int(n), live)
-            who = None
+        # ⚠ 阈值基准**恒为加权合约** —— 真实合约的均线只用于「查看」（/api/ma），
+        # 不参与阈值计算。历史配置里的 sym 字段一律忽略。
+        bars = self.bars(code, kind, limit=max(120, int(n) + 12))
+        base = dynamic_ma(bars, int(n), live)
         if base is None:
             return None, "-", "-"
         off_pct = float(s.get("offPct") or 0.0)
@@ -622,8 +615,7 @@ class App:
         cval = live if (live and live > 0) else base
         off = cval * off_pct / 100.0            # 偏移「C值（现价）」的百分比
         val = base + off if off_dir == "up" else base - off
-        label = ("%s %s MA%d" % (who, TQ.KIND_CN.get(kind, kind), int(n))) if who \
-            else ("%s MA%d" % (TQ.KIND_CN.get(kind, kind), int(n)))
+        label = "%s MA%d" % (TQ.KIND_CN.get(kind, kind), int(n))
         off_label = ("无偏移" if off_pct <= 0
                      else "%s偏移 %.1f%%" % ("上" if off_dir == "up" else "下", off_pct))
         return _r(val, 6), label, off_label
@@ -1353,6 +1345,64 @@ class Handler(BaseHTTPRequestHandler):
                     "kinds": KIND_ORDER, "kindCn": TQ.KIND_CN,
                 })
                 return self._json({"ok": True, "data": d})
+
+            # 查看某一标的（加权 或 任一真实月份合约）在某周期下的均线值
+            # ⚠ 仅用于「查看」，不参与阈值计算 —— 填充阈值始终以加权合约为准
+            if path == "/api/ma":
+                code = (qs.get("code") or [""])[0]
+                kind = (qs.get("kind") or ["d"])[0]
+                sym = (qs.get("sym") or [""])[0].strip()
+                try:
+                    n = int((qs.get("ma") or ["20"])[0])
+                except (TypeError, ValueError):
+                    n = 20
+                if code not in PT.BY_CODE:
+                    return self._json({"ok": False, "message": "未知品种"}, 404)
+                if kind not in KIND_ORDER:
+                    return self._json({"ok": False, "message": "未知周期"}, 400)
+                if n not in MA_CHOICES:
+                    return self._json({"ok": False, "message": "不支持的均线"}, 400)
+                if sym and not App._sym_allowed(code, sym):
+                    return self._json({"ok": False, "message": "合约不属于该品种"},
+                                      400)
+
+                it = APP.items.get(code) or {}
+                digits = int(it.get("digits", 2) or 2)
+                tq = PT.TQ.get(code) or ""
+                is_w = (not sym) or sym == tq
+
+                if is_w:
+                    bars = APP.bars(code, kind, limit=max(200, n + 20))
+                    q = APP.contract_quote(code, "") or {}
+                    name = (it.get("name") or code) + "加权"
+                    scope = "加权（仓权）"
+                else:
+                    bars = APP.bars_sym(sym, kind, limit=max(200, n + 20))
+                    q = APP.contract_quote(code, sym) or {}
+                    name = APP._sym_display(sym, code) or sym
+                    scope = name
+
+                cs = [float(b["c"]) for b in bars if float(b.get("c") or 0) > 0]
+                val = round(sum(cs[-n:]) / n, 6) if len(cs) >= n else None
+                last = q.get("last") or (it.get("price") if is_w else None)
+                # 动态均线：把最后一根未闭合 K 线换成实时价（与行情页口径一致）
+                dyn = None
+                if last and float(last) > 0 and len(cs) >= max(1, n - 1):
+                    seq = cs[-(n - 1):] + [float(last)]
+                    dyn = round(sum(seq) / len(seq), 6)
+
+                return self._json({
+                    "ok": True, "code": code, "sym": sym, "weighted": bool(is_w),
+                    "name": name, "scope": scope,
+                    "kind": kind, "kindCn": TQ.KIND_CN.get(kind, kind),
+                    "ma": n, "value": val, "dyn": dyn, "digits": digits,
+                    "bars": len(bars),
+                    "quote": {"last": last, "pct": q.get("pct"),
+                              "change": q.get("change"), "high": q.get("high"),
+                              "low": q.get("low"), "open": q.get("open"),
+                              "oi": q.get("oi"), "volume": q.get("volume"),
+                              "ts": (q.get("ts") or "")[:19]},
+                })
             return self._json({"ok": False, "message": "not found"}, 404)
         except Exception as exc:                                # noqa: BLE001
             traceback.print_exc()
@@ -1433,10 +1483,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif act == "lock":
                     s["locked"] = bool(body.get("locked"))
                 else:
-                    for k in ("mode", "kind", "ma", "offPct", "offDir", "manual",
-                              "sym"):
+                    for k in ("mode", "kind", "ma", "offPct", "offDir", "manual"):
                         if k in body:
                             s[k] = body[k]
+                    # 阈值基准恒为加权合约：任何来源的 sym 一律清空
+                    s["sym"] = None
                     if s.get("mode") == "ma" and s.get("ma") is not None:
                         s["ma"] = int(s["ma"])
                     if s.get("mode") == "manual" and body.get("manual") is not None:

@@ -118,15 +118,25 @@ function offOptions(sel) {
   }).join('');
 }
 
-/* ---------------- 阈值基准合约下拉（加权 + 全部真实月份合约） ----------------
-   86 个品种全部预取会很重，这里用后台小并发队列渐进加载：先到先 excerpts，
-   用户点开任意卡片的「标的」下拉时基本已就绪；未就绪则立即插队。
-   ---------------------------------------------------------------------------- */
+/* ---------------- 合约列表缓存（仅供「查看合约均线」使用） ----------------
+   按需加载：只有展开某张卡片的「合约均线」时才拉该品种的合约列表。
+   填充阈值始终用加权合约，与这里无关。
+   ------------------------------------------------------------------------ */
 var CT_CACHE = {};      // code -> api 结果（含 null 失败），仅「已加载」才有键
-var CT_QUEUED = {};     // code -> 1，仅表示已排队避免重复
-var CT_QUEUE = [];      // 待加载的 code
-var CT_TIMER = null;
-var CT_BUSY = 0;
+
+/* 参考均线可选周期：MA5 / MA10 / MA20 / MA30 / MA60 */
+var REF_MA = [5, 10, 20, 30, 60];
+
+function refMaOptions(sel) {
+  var arr = (S.maChoices && S.maChoices.length)
+    ? REF_MA.filter(function (m) { return S.maChoices.indexOf(m) >= 0; })
+    : REF_MA.slice();
+  if (!arr.length) arr = REF_MA.slice();
+  return arr.map(function (m) {
+    return '<option value="' + m + '"' +
+      (String(m) === String(sel) ? ' selected' : '') + '>MA' + m + '</option>';
+  }).join('');
+}
 
 function ctHas(code) {
   return Object.prototype.hasOwnProperty.call(CT_CACHE, code);
@@ -146,33 +156,10 @@ function loadCt(code, cb) {
     .catch(function () { CT_CACHE[code] = null; cb(null); });
 }
 
-function ctQueue(code) {
-  if (ctHas(code) || CT_QUEUED[code]) return;
-  CT_QUEUED[code] = 1;
-  CT_QUEUE.push(code);
-  if (!CT_TIMER) CT_TIMER = setInterval(ctPump, 260);
-}
-
-function ctPump() {
-  while (CT_BUSY < 3 && CT_QUEUE.length) {
-    (function (code) {              // IIFE 捕获：var 无块级作用域，直接闭包会全指向最后一个
-      CT_BUSY++;
-      loadCt(code, function () {
-        CT_BUSY--;
-        ctApply(code);
-      });
-    })(CT_QUEUE.shift());
-  }
-  if (!CT_QUEUE.length && CT_BUSY === 0 && CT_TIMER) {
-    clearInterval(CT_TIMER);
-    CT_TIMER = null;
-  }
-}
-
-/* 把已加载的合约列表写进该品种所有卡片的「标的」下拉 */
+/* 把已加载的合约列表写进该品种所有已展开的「查看标的」下拉 */
 function ctApply(code) {
   var r = CT_CACHE[code];
-  var sels = document.querySelectorAll('.k-sym');
+  var sels = document.querySelectorAll('.r-sym');
   Array.prototype.forEach.call(sels, function (sel) {
     if (sel.dataset.code !== code) return;
     var dig = parseInt(sel.dataset.digits || '2', 10);
@@ -183,12 +170,12 @@ function ctApply(code) {
 function ctFill(sel, r, digits) {
   var keep = sel.value;
   if (!r || !r.items || !r.items.length) {
-    sel.innerHTML = '<option value="">标的·加权（仓权）</option>' +
+    sel.innerHTML = '<option value="">加权（仓权）</option>' +
       '<option value="" disabled>（无真实合约）</option>';
     sel.dataset.ready = '1';
     return;
   }
-  var html = '<option value="">标的·加权（仓权）</option>';
+  var html = '<option value="">加权（仓权）</option>';
   r.items.forEach(function (it) {
     var px = fmtPrice(it.last, digits);
     var pc = (it.pct === null || it.pct === undefined) ? '' :
@@ -202,31 +189,26 @@ function ctFill(sel, r, digits) {
     sel.value = keep;
     if (sel.value !== keep) sel.value = '';
   }
-  // 配置项里指定了合约，但列表刚加载完 → 这时才能回填选中
-  if (sel.dataset.want && document.activeElement !== sel) {
-    sel.value = sel.dataset.want;
-    if (sel.value !== sel.dataset.want) sel.value = '';
-    delete sel.dataset.want;
-  }
   sel.dataset.ready = '1';
   sel.title = (r && r.items && r.items.length)
-    ? ('阈值基准标的：已加载 ' + r.items.length + ' 个真实合约（含价格与涨跌）')
-    : '阈值基准标的：加权（仓权）';
+    ? ('查看标的：已加载 ' + r.items.length + ' 个真实合约（含实时价与涨跌）')
+    : '查看标的：加权（仓权）';
 }
 
-/* 绑定某张卡片的「标的」下拉 */
-function bindSymSelect(sel, code, name, digits) {
+/* 绑定某张卡片的「查看标的」下拉（展开时才加载） */
+function bindRefSelect(sel, code, digits) {
   sel.dataset.code = code;
   sel.dataset.digits = digits;
-  if (ctHas(code)) ctFill(sel, CT_CACHE[code], digits);
-  else ctQueue(code);
-  function ensure() {
-    if (sel.dataset.ready === '1') return;
-    loadCt(code, function (r) { ctFill(sel, r, digits); });
+  var done = false;
+  function fill() {
+    if (done) return;
+    done = true;
+    loadCt(code, function (r) {
+      ctFill(sel, r, digits);
+      ctApply(code);
+    });
   }
-  sel.addEventListener('mouseover', ensure);
-  sel.addEventListener('mousedown', ensure);
-  sel.addEventListener('focus', ensure);
+  fill();
   sel.addEventListener('change', function () {
     var opt = sel.options[sel.selectedIndex];
     sel.title = opt ? opt.textContent.trim() : '';
@@ -273,9 +255,6 @@ function makeCard(it, side) {
         '<button class="tsb" data-s="down" type="button">下阈</button>' +
         '<button class="tsb" data-s="up" type="button">上阈</button>' +
       '</span>' +
-      '<select class="sel k-sym" title="阈值基准标的：默认加权（仓权）；也可选任一真实月份合约，取其指定周期的均线">' +
-        '<option value="">标的·加权（仓权）</option>' +
-      '</select>' +
       '<select class="sel k-kind"></select>' +
       '<select class="sel k-ma"></select>' +
       '<select class="sel k-off"></select>' +
@@ -300,6 +279,22 @@ function makeCard(it, side) {
       '<span class="lbl b-tip">点上方「下阈 / 上阈」切换要配置的方向；两个阈值可同时锁定</span>' +
     '</div>' +
 
+    '<div class="ma-ref">' +
+      '<button class="btn sm ghost k-ref" type="button">📈 合约均线</button>' +
+      '<span class="lbl r-sum">查看任一合约的均线值（仅供查看）</span>' +
+      '<div class="ref-body" style="display:none">' +
+        '<div class="ref-row">' +
+          '<select class="sel r-sym" title="查看标的：加权（仓权）或该品种任一真实月份合约">' +
+            '<option value="">加权（仓权）</option>' +
+          '</select>' +
+          '<select class="sel r-kind"></select>' +
+          '<select class="sel r-ma"></select>' +
+          '<button class="btn sm r-go" type="button">查询</button>' +
+        '</div>' +
+        '<div class="r-out">选择合约 / 周期 / 均线后显示数值</div>' +
+      '</div>' +
+    '</div>' +
+
     '<div class="card-foot">' +
       '<button class="btn-view">📊 查看行情</button>' +
       '<span class="lbl k-mkt"></span>' +
@@ -312,7 +307,6 @@ function makeCard(it, side) {
   $('.k-ma', el).innerHTML = maOptions(S.thrMA);
   $('.k-off', el).innerHTML = offOptions(S.thrOffset);
   $('.k-dir', el).value = S.thrOffsetDir || 'down';
-  bindSymSelect($('.k-sym', el), it.code, it.name, it.digits);
 
   function curSide() { return el.dataset.tside; }
 
@@ -331,6 +325,94 @@ function makeCard(it, side) {
     window.open('/行情?code=' + encodeURIComponent(it.code), '_blank');
   });
 
+  /* ---- 合约均线查看（只查看，不影响阈值；填充始终用加权合约）---- */
+  (function () {
+    var btn = $('.k-ref', el), body = $('.ref-body', el);
+    var selSym = $('.r-sym', el), selKind = $('.r-kind', el), selMa = $('.r-ma', el);
+    var out = $('.r-out', el), sum = $('.r-sum', el);
+    var inited = false;
+    var seq = 0;                       // 快速连选时只渲染最后一次查询的结果
+
+    selKind.innerHTML = kindOptions(S.thrKind);
+    selMa.innerHTML = refMaOptions(S.thrMA);
+
+    function query() {
+      var my = ++seq;
+      out.innerHTML = '<span class="r-load">查询中…</span>';
+      fetch('/api/ma?code=' + encodeURIComponent(it.code) +
+            '&sym=' + encodeURIComponent(selSym.value || '') +
+            '&kind=' + encodeURIComponent(selKind.value) +
+            '&ma=' + encodeURIComponent(selMa.value))
+        .then(function (r) { return r.json(); })
+        .then(function (r) { if (my === seq) render(r); })
+        .catch(function () {
+          if (my === seq) out.innerHTML = '<span class="r-err">查询失败</span>';
+        });
+    }
+
+    function render(r) {
+      if (!r || !r.ok) {
+        out.innerHTML = '<span class="r-err">' +
+          esc((r && r.message) || '查询失败') + '</span>';
+        return;
+      }
+      var dg = r.digits || it.digits;
+      var v = r.value, px = (r.quote || {}).last, pct = (r.quote || {}).pct;
+      var diff = (v !== null && v !== undefined && px) ? (px - v) : null;
+      var cls = (diff === null) ? '' : (diff > 0 ? 'up' : (diff < 0 ? 'dn' : ''));
+      var dp = (diff !== null && px) ? (diff / px * 100) : 0;
+      var vs = (v === null || v === undefined) ? '--' : fmtPrice(v, dg);
+      out.innerHTML =
+        '<span class="r-scope">' + esc(r.scope) + '</span>' +
+        '<span class="r-kindc">' + esc(r.kindCn) + '</span>' +
+        '<span class="r-man">MA' + esc(String(r.ma)) + '</span>' +
+        '<span class="r-eq">=</span>' +
+        '<span class="r-val ' + cls + '">' + vs + '</span>' +
+        (r.dyn !== null && r.dyn !== undefined && r.dyn !== v
+          ? '<span class="r-dyn" title="把最后一根未闭合K线换成实时价">' +
+            '实时 ' + fmtPrice(r.dyn, dg) + '</span>' : '') +
+        '<span class="r-sep">·</span>' +
+        '<span class="r-last">现价 <b>' + (px ? fmtPrice(px, dg) : '--') + '</b>' +
+          (pct === null || pct === undefined ? ''
+            : ' <i class="' + (num(pct, 0) >= 0 ? 'up' : 'dn') + '">' +
+              (num(pct, 0) >= 0 ? '↑' : '↓') +
+              Math.abs(num(pct, 2)).toFixed(2) + '%</i>') + '</span>' +
+        (diff === null ? ''
+          : '<span class="r-d ' + cls + '">价' + (diff >= 0 ? '高于' : '低于') +
+            '均线 ' + Math.abs(dp).toFixed(2) + '%</span>') +
+        '<span class="r-ts">' +
+          esc((r.quote && r.quote.ts) ? String(r.quote.ts).slice(11) : '') +
+          '</span>';
+      sum.innerHTML = '<b>' + esc(r.scope) + '</b> · ' + esc(r.kindCn) +
+        ' MA' + esc(String(r.ma)) + ' = ' + vs;
+    }
+
+    function openRef() {
+      if (!inited) {
+        inited = true;
+        bindRefSelect(selSym, it.code, it.digits);
+      }
+      body.style.display = '';
+      btn.classList.add('on');
+      query();
+    }
+
+    btn.addEventListener('click', function () {
+      if (body.style.display === 'none') openRef();
+      else {
+        body.style.display = 'none';
+        btn.classList.remove('on');
+      }
+    });
+    [selSym, selKind, selMa].forEach(function (s) {
+      s.addEventListener('change', function () { if (inited) query(); });
+    });
+    $('.r-go', el).addEventListener('click', function () {
+      if (!inited) { inited = true; bindRefSelect(selSym, it.code, it.digits); }
+      query();
+    });
+  })();
+
   // 填充均线（作用于当前选中的阈别）
   $('.k-fill', el).addEventListener('click', function () {
     var pct = num((CUR[it.code] || {}).percent, 0);
@@ -339,22 +421,16 @@ function makeCard(it, side) {
       return;
     }
     var target = curSide();
-    var selSym = $('.k-sym', el);
-    var symV = selSym ? (selSym.value || '') : '';
     post('/api/threshold', {
       code: it.code, side: target, action: 'set',
       mode: 'ma',
-      sym: symV,
       kind: $('.k-kind', el).value,
       ma: parseInt($('.k-ma', el).value, 10),
       offPct: num($('.k-off', el).value, 0),
       offDir: $('.k-dir', el).value
     }).then(function (r) {
       if (r.ok) {
-        var src = symV && selSym && selSym.options[selSym.selectedIndex]
-          ? selSym.options[selSym.selectedIndex].textContent.trim()
-          : '加权（仓权）';
-        toast(it.name + ' 已按「' + src + '」均线填充' +
+        toast(it.name + ' 已按加权合约均线填充' +
           (target === 'down' ? '下阈' : '上阈'), 'ok');
       } else {
         toast((r.message || '设置失败'), 'bad');
@@ -520,19 +596,6 @@ function patchCard(c, it) {
   if (document.activeElement !== $('.k-kind', el)) {
     if (t.kind) $('.k-kind', el).value = t.kind;
   }
-  // 「标的」下拉：合约列表可能还没加载完 → 记住目标值，加载完后回填
-  (function () {
-    var sel = $('.k-sym', el);
-    if (!sel) return;
-    if (document.activeElement !== sel) {
-      if (sel.dataset.ready === '1') {
-        sel.value = t.sym || '';
-        if (sel.value !== (t.sym || '')) sel.value = '';
-      } else {
-        sel.dataset.want = t.sym || '';
-      }
-    }
-  })();
   if (document.activeElement !== $('.k-ma', el)) {
     if (t.ma) $('.k-ma', el).value = String(t.ma);
   }

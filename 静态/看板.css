@@ -500,12 +500,56 @@ a { color: var(--brand); }
 }
 
 /* 阈值基准「标的」下拉：合约名 + 现价较长，给足宽度但留住换行余量 */
-.thr-open .k-sym {
-  max-width: 178px;
-  flex: 1 1 150px;
-  text-overflow: ellipsis;
+/* ---- 合约均线查看（仅供查看，不参与阈值计算） ---- */
+.ma-ref {
+  margin-top: 9px;
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
 }
-.thr-open .k-sym option { font-family: var(--mono); }
+.ma-ref .k-ref.on {
+  background: var(--brand); color: #fff; border-color: var(--brand);
+}
+.ma-ref .r-sum {
+  font-size: 12px; color: var(--text-3);
+}
+.ref-body { margin-top: 8px; }
+.ref-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ref-row .r-sym {
+  max-width: 200px; flex: 1 1 165px; text-overflow: ellipsis;
+}
+.ref-row .r-sym option { font-family: var(--mono); }
+
+.r-out {
+  margin-top: 7px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 6px 10px;
+  min-height: 32px;
+}
+.r-out .r-scope { font-weight: 700; }
+.r-out .r-kindc, .r-out .r-man, .r-out .r-sep, .r-out .r-ts {
+  color: var(--text-3); font-weight: 600;
+}
+.r-out .r-eq { color: var(--text-3); }
+.r-out .r-val {
+  font-family: var(--mono); font-weight: 700; font-size: 15px;
+}
+.r-out .r-val.up, .r-out .r-d.up { color: var(--up); }
+.r-out .r-val.dn, .r-out .r-d.dn { color: var(--down); }
+.r-out .r-dyn {
+  font-family: var(--mono); font-size: 12px; color: var(--text-3);
+  border: 1px dashed var(--line); border-radius: 6px; padding: 1px 6px;
+}
+.r-out .r-last b { font-family: var(--mono); }
+.r-out .r-last i { font-style: normal; font-weight: 700; }
+.r-out .r-last i.up { color: var(--up); }
+.r-out .r-last i.dn { color: var(--down); }
+.r-out .r-d { font-weight: 700; }
+.r-out .r-load { color: var(--text-3); }
+.r-out .r-err { color: var(--up); font-weight: 700; }
 
 /* 阈别切换：下阈 / 上阈（两者可同时配置） */
 .tseg {
