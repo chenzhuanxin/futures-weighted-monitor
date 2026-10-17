@@ -1385,18 +1385,30 @@ class Handler(BaseHTTPRequestHandler):
                 cs = [float(b["c"]) for b in bars if float(b.get("c") or 0) > 0]
                 val = round(sum(cs[-n:]) / n, 6) if len(cs) >= n else None
                 last = q.get("last") or (it.get("price") if is_w else None)
+                last = float(last) if last else 0.0
                 # 动态均线：把最后一根未闭合 K 线换成实时价（与行情页口径一致）
                 dyn = None
-                if last and float(last) > 0 and len(cs) >= max(1, n - 1):
-                    seq = cs[-(n - 1):] + [float(last)]
+                if last > 0 and len(cs) >= max(1, n - 1):
+                    seq = cs[-(n - 1):] + [last]
                     dyn = round(sum(seq) / len(seq), 6)
+                # 顺便给出常用均线（MA5/10/20/30/60）的全部数值，一次请求展示完整
+                lines = {}
+                for m in (5, 10, 20, 30, 60):
+                    if m not in MA_CHOICES:
+                        continue
+                    if len(cs) >= m:
+                        lines[str(m)] = round(sum(cs[-m:]) / m, 6)
+                    if last > 0 and len(cs) >= max(1, m - 1):
+                        seq = cs[-(m - 1):] + [last]
+                        lines.setdefault("dyn" + str(m),
+                                         round(sum(seq) / len(seq), 6))
 
                 return self._json({
                     "ok": True, "code": code, "sym": sym, "weighted": bool(is_w),
                     "name": name, "scope": scope,
                     "kind": kind, "kindCn": TQ.KIND_CN.get(kind, kind),
-                    "ma": n, "value": val, "dyn": dyn, "digits": digits,
-                    "bars": len(bars),
+                    "ma": n, "value": val, "dyn": dyn, "lines": lines,
+                    "digits": digits, "bars": len(bars),
                     "quote": {"last": last, "pct": q.get("pct"),
                               "change": q.get("change"), "high": q.get("high"),
                               "low": q.get("low"), "open": q.get("open"),

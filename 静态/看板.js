@@ -279,19 +279,25 @@ function makeCard(it, side) {
       '<span class="lbl b-tip">点上方「下阈 / 上阈」切换要配置的方向；两个阈值可同时锁定</span>' +
     '</div>' +
 
+
     '<div class="ma-ref">' +
-      '<button class="btn sm ghost k-ref" type="button">📈 合约均线</button>' +
-      '<span class="lbl r-sum">查看任一合约的均线值（仅供查看）</span>' +
-      '<div class="ref-body" style="display:none">' +
-        '<div class="ref-row">' +
+      '<button class="ma-tg k-ref" type="button" title="展开查看该品种任一合约的均线值（仅供查看，不影响阈值）">' +
+        '<span class="mi">📈</span>' +
+        '<span class="mt">合约均线查看</span>' +
+        '<span class="md">加权 / 任一真实合约 · 各周期 · MA5~MA60</span>' +
+        '<span class="ms r-sum"></span>' +
+        '<span class="mar">▾</span>' +
+      '</button>' +
+      '<div class="ma-bd ref-body" style="display:none">' +
+        '<div class="ma-row ref-row">' +
           '<select class="sel r-sym" title="查看标的：加权（仓权）或该品种任一真实月份合约">' +
             '<option value="">加权（仓权）</option>' +
           '</select>' +
           '<select class="sel r-kind"></select>' +
           '<select class="sel r-ma"></select>' +
-          '<button class="btn sm r-go" type="button">查询</button>' +
+          '<button class="btn sm r-go" type="button" title="重新计算">查看</button>' +
         '</div>' +
-        '<div class="r-out">选择合约 / 周期 / 均线后显示数值</div>' +
+        '<div class="r-out">展开后即自动查看；可切换合约 / 周期 / 均线</div>' +
       '</div>' +
     '</div>' +
 
@@ -325,7 +331,7 @@ function makeCard(it, side) {
     window.open('/行情?code=' + encodeURIComponent(it.code), '_blank');
   });
 
-  /* ---- 合约均线查看（只查看，不影响阈值；填充始终用加权合约）---- */
+  /* ---- 合约均线查看（卡片内，默认折叠；只看数值，不画K线）---- */
   (function () {
     var btn = $('.k-ref', el), body = $('.ref-body', el);
     var selSym = $('.r-sym', el), selKind = $('.r-kind', el), selMa = $('.r-ma', el);
@@ -350,6 +356,31 @@ function makeCard(it, side) {
         });
     }
 
+    /* 该周期全部均线（MA5/10/20/30/60）：点一下即切换为主显示 */
+    function linesHtml(r, dg, px) {
+      var L = r.lines || {}, keys = [];
+      Object.keys(L).forEach(function (k) {
+        if (k.indexOf('dyn') === 0) return;
+        keys.push(k);
+      });
+      keys.sort(function (a, b) { return parseInt(a, 10) - parseInt(b, 10); });
+      if (!keys.length) return '';
+      var html = '<span class="moli-t">该周期全部均线</span>';
+      keys.forEach(function (k) {
+        var v = L[k], dv = L['dyn' + k];
+        var d = (v !== null && v !== undefined && px) ? (px - v) : null;
+        var c = (d === null) ? '' : (d > 0 ? 'up' : (d < 0 ? 'dn' : ''));
+        html += '<span class="moli' + (String(r.ma) === k ? ' sel' : '') +
+          '" data-ma="' + esc(k) + '" title="点击切换为 MA' + esc(k) + '">' +
+          '<span class="mk">MA' + esc(k) + '</span>' +
+          '<span class="mv ' + c + '">' + fmtPrice(v, dg) + '</span>' +
+          (dv !== null && dv !== undefined && dv !== v
+            ? '<span class="mdv">' + fmtPrice(dv, dg) + '</span>' : '') +
+          '</span>';
+      });
+      return '<div class="mo-lines">' + html + '</div>';
+    }
+
     function render(r) {
       if (!r || !r.ok) {
         out.innerHTML = '<span class="r-err">' +
@@ -363,35 +394,42 @@ function makeCard(it, side) {
       var dp = (diff !== null && px) ? (diff / px * 100) : 0;
       var vs = (v === null || v === undefined) ? '--' : fmtPrice(v, dg);
       out.innerHTML =
-        '<span class="r-scope">' + esc(r.scope) + '</span>' +
-        '<span class="r-kindc">' + esc(r.kindCn) + '</span>' +
-        '<span class="r-man">MA' + esc(String(r.ma)) + '</span>' +
-        '<span class="r-eq">=</span>' +
-        '<span class="r-val ' + cls + '">' + vs + '</span>' +
-        (r.dyn !== null && r.dyn !== undefined && r.dyn !== v
-          ? '<span class="r-dyn" title="把最后一根未闭合K线换成实时价">' +
-            '实时 ' + fmtPrice(r.dyn, dg) + '</span>' : '') +
-        '<span class="r-sep">·</span>' +
-        '<span class="r-last">现价 <b>' + (px ? fmtPrice(px, dg) : '--') + '</b>' +
-          (pct === null || pct === undefined ? ''
-            : ' <i class="' + (num(pct, 0) >= 0 ? 'up' : 'dn') + '">' +
-              (num(pct, 0) >= 0 ? '↑' : '↓') +
-              Math.abs(num(pct, 2)).toFixed(2) + '%</i>') + '</span>' +
-        (diff === null ? ''
-          : '<span class="r-d ' + cls + '">价' + (diff >= 0 ? '高于' : '低于') +
-            '均线 ' + Math.abs(dp).toFixed(2) + '%</span>') +
-        '<span class="r-ts">' +
-          esc((r.quote && r.quote.ts) ? String(r.quote.ts).slice(11) : '') +
-          '</span>';
-      sum.innerHTML = '<b>' + esc(r.scope) + '</b> · ' + esc(r.kindCn) +
-        ' MA' + esc(String(r.ma)) + ' = ' + vs;
+        '<div class="mo-main">' +
+          '<span class="r-scope">' + esc(r.scope) + '</span>' +
+          '<span class="r-kindc">' + esc(r.kindCn) + '</span>' +
+          '<span class="r-man">MA' + esc(String(r.ma)) + '</span>' +
+          '<span class="r-eq">=</span>' +
+          '<span class="r-val ' + cls + '">' + vs + '</span>' +
+          (r.dyn !== null && r.dyn !== undefined && r.dyn !== v
+            ? '<span class="r-dyn" title="末根未闭合K线换成现价">' +
+              '实时 ' + fmtPrice(r.dyn, dg) + '</span>' : '') +
+          '<span class="r-last">现价 <b>' + (px ? fmtPrice(px, dg) : '--') + '</b>' +
+            (pct === null || pct === undefined ? ''
+              : ' <i class="' + (num(pct, 0) >= 0 ? 'up' : 'dn') + '">' +
+                (num(pct, 0) >= 0 ? '↑' : '↓') +
+                Math.abs(num(pct, 2)).toFixed(2) + '%</i>') + '</span>' +
+          (diff === null ? ''
+            : '<span class="r-d ' + cls + '">价' + (diff >= 0 ? '高于' : '低于') +
+              '均线 ' + Math.abs(dp).toFixed(2) + '%</span>') +
+          '<span class="r-ts">' +
+            esc((r.quote && r.quote.ts) ? String(r.quote.ts).slice(11) : '') +
+            '</span>' +
+        '</div>' + linesHtml(r, dg, px);
+      Array.prototype.forEach.call(out.querySelectorAll('.moli'), function (m) {
+        m.addEventListener('click', function () {
+          var want = m.dataset.ma;
+          var has = Array.prototype.some.call(selMa.options, function (o) {
+            return o.value === want;
+          });
+          if (has) { selMa.value = want; query(); }
+        });
+      });
+      sum.innerHTML = 'MA' + esc(String(r.ma)) + ' = ' + vs;
+      btn.classList.add('has');
     }
 
     function openRef() {
-      if (!inited) {
-        inited = true;
-        bindRefSelect(selSym, it.code, it.digits);
-      }
+      if (!inited) { inited = true; bindRefSelect(selSym, it.code, it.digits); }
       body.style.display = '';
       btn.classList.add('on');
       query();
@@ -399,10 +437,7 @@ function makeCard(it, side) {
 
     btn.addEventListener('click', function () {
       if (body.style.display === 'none') openRef();
-      else {
-        body.style.display = 'none';
-        btn.classList.remove('on');
-      }
+      else { body.style.display = 'none'; btn.classList.remove('on'); }
     });
     [selSym, selKind, selMa].forEach(function (s) {
       s.addEventListener('change', function () { if (inited) query(); });
