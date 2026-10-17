@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>加权（仓权）合约监控面板 · 天勤 TqSdk 版</title>
+<meta name="description" content="86 个期货品种加权（仓权）合约行情、历史基准偏离度、动态均线阈值与卡片式邮件预警的本机看板（Python + HTML）">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2322354a'/%3E%3Crect x='13' y='40' width='6' height='13' fill='%231ea860'/%3E%3Crect x='22' y='33' width='6' height='17' fill='%23f04e4a'/%3E%3Crect x='31' y='26' width='6' height='20' fill='%23f04e4a'/%3E%3Crect x='40' y='30' width='6' height='15' fill='%231ea860'/%3E%3Crect x='49' y='16' width='6' height='25' fill='%23f04e4a'/%3E%3Cpath d='M10 48 L56 21' stroke='%23ffc94d' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0b111f; --bg2:#111a2e; --card:#16223a; --line:#24334f;
+    --tx:#e6ecf7; --tx2:#9fb0cc; --tx3:#6d809e;
+    --up:#f04e4a; --down:#1ea860; --gold:#ffc94d;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 50% -10%,#1a2745 0%,var(--bg) 55%) no-repeat,var(--bg);
+    color:var(--tx); font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,-apple-system,sans-serif;
+    line-height:1.7; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:0 24px}
+  a{color:var(--gold); text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* hero */
+  header{padding:72px 0 40px; text-align:center}
+  .logo{
+    width:112px; height:112px; margin:0 auto 22px; display:block;
+    filter:drop-shadow(0 12px 28px rgba(0,0,0,.55));
+  }
+  h1{margin:0 0 12px; font-size:34px; letter-spacing:.5px; font-weight:700}
+  .sub{margin:0 auto; max-width:760px; color:var(--tx2); font-size:16px}
+  .btns{margin-top:30px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap}
+  .btn{
+    padding:12px 26px; border-radius:10px; font-size:15px; font-weight:600;
+    border:1px solid var(--line); transition:.18s; display:inline-block;
+  }
+  .btn.pri{background:linear-gradient(180deg,#f0615c,#d93c37); color:#fff; border-color:#f0615c}
+  .btn.pri:hover{transform:translateY(-2px); box-shadow:0 10px 24px rgba(240,78,74,.32); text-decoration:none}
+  .btn.sec{background:var(--card); color:var(--tx)}
+  .btn.sec:hover{background:#1c2a44; text-decoration:none}
+
+  /* sections */
+  section{padding:34px 0}
+  h2{font-size:22px; margin:0 0 8px; display:flex; align-items:center; gap:10px}
+  h2::before{content:""; width:4px; height:20px; border-radius:2px; background:var(--gold)}
+  .lead{color:var(--tx2); margin:0 0 22px; font-size:15px}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px}
+  .c{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 20px}
+  .c h3{margin:0 0 8px; font-size:16px}
+  .c p{margin:0; color:var(--tx2); font-size:14px}
+  .tag{font-size:12px; color:var(--tx3); display:block; margin-bottom:6px; font-family:var(--mono)}
+
+  table{width:100%; border-collapse:collapse; font-size:14px; background:var(--card);
+        border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  th,td{padding:10px 14px; text-align:left; border-bottom:1px solid var(--line)}
+  th{background:#1a2740; color:var(--tx); font-weight:600}
+  tr:last-child td{border-bottom:none}
+  td code, .c code{font-family:var(--mono); font-size:13px; color:var(--gold)}
+
+  pre{background:#0d1526; border:1px solid var(--line); border-radius:12px;
+      padding:16px 18px; overflow:auto; font-family:var(--mono); font-size:13.5px; color:#cfe0ff}
+  .up{color:var(--up)} .down{color:var(--down)}
+
+  .docs{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px}
+  .doc{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 20px; display:block; color:var(--tx)}
+  .doc:hover{border-color:var(--gold); text-decoration:none}
+  .doc b{display:block; margin-bottom:4px}
+  .doc span{color:var(--tx2); font-size:13.5px}
+
+  footer{padding:44px 0 56px; text-align:center; color:var(--tx3); font-size:13.5px}
+  .warn{margin-top:22px; padding:14px 18px; border:1px solid #4d3a1f; background:#221a0e;
+         border-radius:12px; color:#f0c987; font-size:13.5px}
+  @media(max-width:600px){h1{font-size:26px}header{padding:48px 0 28px}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header>
+  <!-- 与 exe 图标同源：深蓝方砖 + 红涨绿跌 K 线 + 金色趋势线 -->
+  <svg class="logo" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="应用图标">
+    <defs>
+      <clipPath id="rr"><rect width="512" height="512" rx="120" ry="120"/></clipPath>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#223154"/><stop offset="1" stop-color="#0c1322"/>
+      </linearGradient>
+    </defs>
+    <g clip-path="url(#rr)">
+      <rect width="512" height="512" fill="url(#bg)"/>
+      <g stroke="#ffffff" stroke-opacity="0.07" stroke-width="3">
+        <line x1="69" y1="154" x2="445" y2="154"/>
+        <line x1="69" y1="241" x2="445" y2="241"/>
+        <line x1="69" y1="328" x2="445" x2="328" y2="328"/>
+      </g>
+      <line x1="77" y1="385" x2="441" y2="184" stroke="#ffc94d" stroke-width="11" stroke-linecap="round"/>
+      <g stroke-linecap="round">
+        <line x1="119" y1="310" x2="119" y2="385" stroke="#1ea860" stroke-width="10"/>
+        <rect x="104" y="334" width="30" height="37" fill="#1ea860"/>
+        <line x1="186" y1="310" x2="186" y2="376" stroke="#f04e4a" stroke-width="10"/>
+        <rect x="171" y="329" width="30" height="45" fill="#f04e4a"/>
+        <line x1="254" y1="276" x2="254" y2="342" stroke="#f04e4a" stroke-width="10"/>
+        <rect x="239" y="296" width="30" height="46" fill="#f04e4a"/>
+        <line x1="321" y1="281" x2="321" y2="328" stroke="#1ea860" stroke-width="10"/>
+        <rect x="306" y="296" width="30" height="33" fill="#1ea860"/>
+        <line x1="388" y1="203" x2="388" y2="320" stroke="#f04e4a" stroke-width="10"/>
+        <rect x="373" y="223" width="30" height="93" fill="#f04e4a"/>
+      </g>
+      <g fill="none" stroke="#ffc94d" stroke-width="11">
+        <circle cx="77" cy="385" r="15"/><circle cx="441" cy="184" r="15"/>
+      </g>
+      <rect x="6" y="6" width="500" height="500" rx="114" ry="114"
+            fill="none" stroke="#7a98d6" stroke-opacity="0.37" stroke-width="12"/>
+    </g>
+  </svg>
+
+  <h1>加权（仓权）合约监控面板</h1>
+  <p class="sub">
+    跑在本机的期货全品种监控看板：86 个品种的<b>加权（仓权）合约</b>行情，
+    对照历史最高 / 最低 / 均价算出<b>偏离度</b>，配<b>动态均线阈值 + 偏移 + 锁定</b>，
+    触发时只发<b>卡片式邮件</b>。Python + HTML，全部离线可用。
+  </p>
+
+  <div class="btns">
+    <a class="btn pri" href="__EXE_URL__">⬇ 下载 exe（91 MB）</a>
+    <a class="btn sec" href="__USAGE_URL__">使用说明</a>
+    <a class="btn sec" href="__REPO_URL__">源码仓库</a>
+  </div>
+
+  <div class="warn">
+    ⚠ 本面板仅为个人学习研究工具，行情存在延时，<b>不构成任何投资建议</b>，
+    据此交易风险自负。行情数据版权归上海信易信息科技股份有限公司（天勤 / 快期）所有。
+  </div>
+</header>
+
+<section>
+  <h2>它解决什么问题</h2>
+  <p class="lead">
+    看单个合约（尤其主连）容易被换月跳空和流动性差异干扰。加权合约按<b>持仓量加权</b>
+    合成指数，更贴近品种整体价格水平。面板把「当前价距历史极端位置有多远」量化成
+    0~100 的偏离度，横向铺开 86 个品种，一眼看出谁在高位、谁在低位。
+  </p>
+  <div class="grid">
+    <div class="c">
+      <span class="tag">加权（仓权）合约</span>
+      <h3>KQ.i@ 口径</h3>
+      <p>天勤官方指数合约，按持仓量加权，换月平滑无跳空。不使用主连 KQ.m@。</p>
+    </div>
+    <div class="c">
+      <span class="tag">偏离度</span>
+      <h3>历史位置量化</h3>
+      <p>以历史均价 M 为 0 基准，高低两侧各自归一化到 0~100，越大越极端。</p>
+    </div>
+    <div class="c">
+      <span class="tag">动态阈值</span>
+      <h3>均线 + 偏移 + 锁定</h3>
+      <p>周期 × 均线二级选择填充，0.1%~1% 上/下偏移，锁定后才预警，门槛 60~90% 可调。</p>
+    </div>
+    <div class="c">
+      <span class="tag">预警</span>
+      <h3>1 分钟 K 线穿越</h3>
+      <p>上一根在阈内、当前根穿越到阈外才触发；同一根 K 线只报一次，不刷屏。</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>快速开始</h2>
+  <p class="lead">两种方式，任选其一。</p>
+
+  <h3>方式 A · exe（推荐）</h3>
+  <pre>双击 加权合约监控面板.exe
+→ 等几秒（解压 91MB 包体）
+→ 浏览器自动打开看板
+→ 右上角「设置」填天勤账号与邮箱，即可开始监控</pre>
+
+  <h3>方式 B · 源码</h3>
+  <pre>pip install tqsdk
+双击 启动面板.bat
+# 或：python launch.py</pre>
+
+  <p class="lead" style="margin-top:18px">
+    启动后控制台会打印「<b>看板地址</b>」（默认 http://127.0.0.1:8962/ ，端口被占会自动顺延）。
+    控制台窗口不能关，关闭即退出服务。
+  </p>
+</section>
+
+<section>
+  <h2>文档</h2>
+  <div class="docs">
+    <a class="doc" href="__PROJECT_URL__">
+      <b>📘 项目说明</b><span>定位、特性、架构、目录结构、运行环境与合规声明</span>
+    </a>
+    <a class="doc" href="__USAGE_URL__">
+      <b>📗 使用说明</b><span>启动、首次配置、看板操作、阈值配置全流程、预警排查</span>
+    </a>
+    <a class="doc" href="__DATA_URL__">
+      <b>📙 数据源说明</b><span>行情来源、加权口径、历史基准 H/L/M 来源与已知缺陷</span>
+    </a>
+  </div>
+</section>
+
+<section>
+  <h2>技术要点</h2>
+  <div class="grid">
+    <div class="c"><h3>服务端</h3><p>Python 标准库实现 HTTP + SSE + 预警引擎 + 配置持久化，唯一第三方依赖是 tqsdk。</p></div>
+    <div class="c"><h3>行情层</h3><p>独立线程持 TqApi 循环 wait_update()，外部通过任务队列投递请求，线程安全。</p></div>
+    <div class="c"><h3>前端</h3><p>原生 HTML/CSS/JS，SSE 事件驱动局部更新，无轮询；ECharts 已本地化，离线可用。</p></div>
+    <div class="c"><h3>图表</h3><p>行情页 8 周期 × 7 类指标，K 线上方实时显示 MA5/10/20/30/60 数值。</p></div>
+  </div>
+</section>
+
+<footer>
+  设计：<b>公歧子</b>　微信：<b>gongqizi0</b><br>
+  免责声明：本项目仅供个人学习研究，行情数据版权归上海信易信息科技股份有限公司所有
+</footer>
+</div>
+
+</body>
+</html>
