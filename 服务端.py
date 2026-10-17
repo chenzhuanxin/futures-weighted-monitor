@@ -54,7 +54,18 @@ def _res_dir() -> str:
 def _data_dir() -> str:
     """可写数据目录（配置 / 缓存）。"""
     if _is_frozen():
-        return os.path.dirname(os.path.abspath(sys.executable))
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        try:
+            os.makedirs(os.path.join(base, "缓存"), exist_ok=True)
+            return base
+        except Exception:                                       # noqa: BLE001
+            # exe 被放在 Program Files 等无写权限的位置时，
+            # 回退到用户本地数据目录，避免启动即崩
+            fb = os.path.join(
+                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                "加权合约监控面板")
+            os.makedirs(os.path.join(fb, "缓存"), exist_ok=True)
+            return fb
     return _HERE
 
 

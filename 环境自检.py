@@ -245,6 +245,12 @@ def _restart_with(exe: str, server_path: str, argv: list, log=None) -> bool:
 def ensure(server_path: str | None = None, argv: list | None = None,
            auto: bool = True, log=print) -> bool:
     """确保当前进程能 import tqsdk。True = 可以继续跑。"""
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包后：tqsdk 及其依赖已全部内置进 exe，
+        # 「换解释器重启 / 联网 pip」这两条路都不存在了——此刻若 import
+        # 失败，多半是杀软误删或解包目录异常，继续往下走只会更乱，
+        # 直接返回 False 交给上层打印 fail_hint。
+        return here_has_tqsdk()
     if here_has_tqsdk():
         if os.environ.get(PY_ENV) and log:
             log("[环境] 已按自愈结果使用解释器：%s" % sys.executable)
@@ -279,6 +285,13 @@ def ensure(server_path: str | None = None, argv: list | None = None,
 
 def fail_hint() -> str:
     """给用户看的、可直接复制粘贴的修复命令。"""
+    if getattr(sys, "frozen", False):
+        return (
+            "\n" + "=" * 66 + "\n"
+            "[无法启动] 打包版内置的天勤 tqsdk 加载失败。\n"
+            "可能原因：杀毒软件 / Windows Defender 误删了解包目录里的文件。\n"
+            "请把本 exe 加入杀软白名单后重试；若仍失败请重新下载完整文件。\n"
+            + "=" * 66 + "\n")
     exe = sys.executable
     return (
         "\n" + "=" * 66 + "\n"

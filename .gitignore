@@ -3,3 +3,8 @@ __pycache__/
 缓存/
 !缓存/.gitkeep
 *.log
+
+# PyInstaller 产物与中间目录
+build/
+dist/
+打包/图标_尺寸对比.png
